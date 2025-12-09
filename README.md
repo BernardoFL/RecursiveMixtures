@@ -1,6 +1,6 @@
 # Recursive Mixtures
 
-A JAX-based Python framework for recursive algorithms on mixture models using Gradient Flows on Measure Spaces.
+A JAX-based Python framework for recursive algorithms on Bayesian nonparametric mixture models using metric gradient flows on spaces of probability measures.
 
 ## Overview
 
