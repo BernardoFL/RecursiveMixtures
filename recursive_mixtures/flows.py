@@ -27,6 +27,7 @@ from recursive_mixtures.functionals import (
     LogLikelihoodFunctional,
     MMDFunctional,
     KLFunctional,
+    SinkhornPriorFunctional,
 )
 
 
@@ -209,6 +210,8 @@ class HellingerKantorovichFlow(GradientFlow):
         sinkhorn_reg: float = 0.1,
         use_sinkhorn: bool = True,
         prior_particles: Optional[ParticleMeasure] = None,
+        prior_flow_weight: float = 0.0,
+        prior_mc_samples: int = 1,
     ):
         """
         Initialize Hellinger-Kantorovich flow.
@@ -228,6 +231,8 @@ class HellingerKantorovichFlow(GradientFlow):
         self.sinkhorn_reg = sinkhorn_reg
         self.use_sinkhorn = use_sinkhorn
         self._prior_particles = prior_particles
+        self.prior_flow_weight = prior_flow_weight
+        self.prior_mc_samples = prior_mc_samples
     
     def _get_prior_particles(
         self,
@@ -329,7 +334,36 @@ class HellingerKantorovichFlow(GradientFlow):
         
         # Step 1: Hellinger (weight) update
         func = self.likelihood_functional.set_data(data)
-        V = func.variational_derivative(measure)
+        g = func.variational_derivative(measure)
+        
+        # Optional prior force via Sinkhorn dual potentials
+        V = g
+        sinkhorn_key = key
+        
+        if self.prior_flow_weight != 0.0 and self.prior_mc_samples > 0:
+            if key is None:
+                raise ValueError(
+                    "HellingerKantorovichFlow requires a PRNG key when "
+                    "prior_flow_weight > 0 to sample prior measures."
+                )
+            
+            # Split key into MC prior keys and (optionally) a key for atom Sinkhorn drift
+            n_splits = self.prior_mc_samples + (1 if self.use_sinkhorn else 0)
+            keys = jr.split(key, n_splits)
+            mc_keys = keys[: self.prior_mc_samples]
+            sinkhorn_key = keys[-1] if self.use_sinkhorn else None
+            
+            prior_measures = [
+                self.prior.to_particle_measure(k, measure.n_particles)
+                for k in mc_keys
+            ]
+            prior_func = SinkhornPriorFunctional(
+                prior_measures=prior_measures,
+                reg=self.sinkhorn_reg,
+            )
+            h = prior_func.variational_derivative(measure)
+            V = g + self.prior_flow_weight * h
+        
         weights = measure.weights
         V_bar = jnp.sum(weights * V)
         
@@ -339,9 +373,11 @@ class HellingerKantorovichFlow(GradientFlow):
         velocity = self._compute_velocity(measure, data)
         
         # Add Sinkhorn regularization drift if enabled
-        if self.use_sinkhorn and key is not None:
-            key1, key2 = jr.split(key)
-            prior_measure = self._get_prior_particles(key1, measure.n_particles)
+        if self.use_sinkhorn and sinkhorn_key is not None:
+            prior_measure = self._get_prior_particles(
+                sinkhorn_key,
+                measure.n_particles,
+            )
             sinkhorn_drift = self._compute_sinkhorn_drift(measure, prior_measure)
             velocity = velocity + self.sinkhorn_reg * sinkhorn_drift
         

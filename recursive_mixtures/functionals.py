@@ -16,6 +16,8 @@ import jax.numpy as jnp
 from jax import Array
 from jax.scipy.special import logsumexp
 
+from recursive_mixtures.utils import compute_cost_matrix, compute_sinkhorn_potentials
+
 if TYPE_CHECKING:
     from recursive_mixtures.kernels import Kernel
     from recursive_mixtures.measure import ParticleMeasure, Prior
@@ -290,6 +292,93 @@ class MMDFunctional(Functional):
         mu_P = self.target.mean_embedding(self.kernel, eval_points)
         
         return 2.0 * (mu_rho - mu_P)
+
+
+class SinkhornPriorFunctional(Functional):
+    """
+    Sinkhorn-based prior functional for HK flows.
+    
+    This functional encodes the prior variation term using dual
+    Sinkhorn potentials between the current measure μ and a
+    collection of Monte Carlo prior particle measures {p_m}.
+    
+    For each prior sample p_m, we compute the dual potential
+    f_{μ→p_m} at the atoms of μ via entropy-regularized OT, and
+    define the variational derivative as the average potential:
+    
+        h_i = (1/M) Σ_{m=1}^M f_{μ→p_m}(θ_i).
+    """
+    
+    def __init__(
+        self,
+        prior_measures: list["ParticleMeasure"],
+        reg: float = 0.1,
+    ):
+        """
+        Initialize Sinkhorn-based prior functional.
+        
+        Args:
+            prior_measures: List of prior particle measures {p_m}
+            reg: Sinkhorn regularization parameter ε
+        """
+        if len(prior_measures) == 0:
+            raise ValueError("SinkhornPriorFunctional requires at least one prior measure")
+        self.prior_measures = prior_measures
+        self.reg = reg
+    
+    def __call__(self, measure: "ParticleMeasure") -> Array:
+        """
+        Return a scalar energy proxy based on averaged potentials.
+        
+        This is not used directly in the flow, but we define it as
+        the weighted average of the variational derivative.
+        """
+        h = self.variational_derivative(measure)
+        return jnp.sum(measure.weights * h)
+    
+    def variational_derivative(
+        self,
+        measure: "ParticleMeasure",
+        x: Optional[Array] = None,
+    ) -> Array:
+        """
+        Compute prior variation h_i at atom locations.
+        
+        Currently this is only defined at the atoms of `measure`
+        (i.e. x must be None), which is sufficient for HK weight
+        updates.
+        """
+        if x is not None:
+            raise NotImplementedError(
+                "SinkhornPriorFunctional variational_derivative is only "
+                "implemented at the atoms of the input measure (x=None)."
+            )
+        
+        atoms = measure.atoms  # (N, D)
+        weights = measure.weights  # (N,)
+        n_atoms = atoms.shape[0]
+        
+        # Accumulate dual source potentials f_{μ→p_m} over prior samples
+        f_sum = jnp.zeros(n_atoms)
+        
+        for prior_measure in self.prior_measures:
+            # Cost matrix between current atoms and prior atoms
+            M = compute_cost_matrix(atoms, prior_measure.atoms, metric="sqeuclidean")
+            
+            # Dual potentials (f at source atoms, g at prior atoms)
+            f, _ = compute_sinkhorn_potentials(
+                a=weights,
+                b=prior_measure.weights,
+                M=M,
+                reg=self.reg,
+            )
+            f_sum = f_sum + f
+        
+        # Average over M prior samples
+        M_count = float(len(self.prior_measures))
+        h = f_sum / M_count
+        
+        return h
 
 
 class EntropyFunctional(Functional):

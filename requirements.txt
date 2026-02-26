@@ -4,4 +4,5 @@ POT>=0.9.0
 numpy>=1.24.0
 matplotlib>=3.7.0
 scipy>=1.11.0
+numpyro>=0.13.0
 

@@ -50,6 +50,8 @@ def setup_experiment():
         'kernel_bandwidth': 0.8,
         'sinkhorn_reg': 0.05,
         'wasserstein_weight': 0.1,
+        'prior_flow_weight': 0.1,
+        'prior_mc_samples': 5,
         
         # Prior parameters
         'prior_mean': 0.0,
@@ -126,11 +128,15 @@ def run_hk_flow(config):
         sinkhorn_reg=config['sinkhorn_reg'],
         use_sinkhorn=True,
         prior_particles=prior_particles,
+        prior_flow_weight=config['prior_flow_weight'],
+        prior_mc_samples=config['prior_mc_samples'],
     )
     print(f"\n4. Created HK Flow:")
     print(f"   Step size: {config['step_size']}")
     print(f"   Wasserstein weight: {config['wasserstein_weight']}")
     print(f"   Sinkhorn regularization: {config['sinkhorn_reg']}")
+    print(f"   Prior flow weight (lambda): {config['prior_flow_weight']}")
+    print(f"   Prior MC samples: {config['prior_mc_samples']}")
     
     # Run flow
     print(f"\n5. Running flow on {config['n_data']} data points...")
