@@ -161,8 +161,8 @@ def setup_config() -> Dict:
         "banana_curvatures": jnp.array([0.08, -0.08, 0.08, -0.08]),
         "banana_scales": jnp.array([[1.2, 0.8], [1.2, 0.8], [1.2, 0.8], [1.2, 0.8]]),
         "banana_weights": jnp.array([0.25, 0.25, 0.25, 0.25]),
-        # Data (match fast bootstrap settings)
-        "n_data": 200,
+        # Data
+        "n_data": 1000,
         # Particles (match fast bootstrap settings)
         "n_particles": 50,
         # HK flow parameters (runtime: ~ n_steps * (prior_mc_samples + 1) * sinkhorn_num_iters Sinkhorn iters)
@@ -183,10 +183,10 @@ def setup_config() -> Dict:
         "grid_min": -8.0,
         "grid_max": 8.0,
         "grid_size": 35,
-        # NumPyro NUTS (match fast bootstrap settings)
+        # NumPyro NUTS
         "use_numpyro": True,
         "numpyro_num_warmup": 200,
-        "numpyro_num_samples": 400,
+        "numpyro_num_samples": 1000,
         "numpyro_num_chains": 1,
         "numpyro_seed": 2024,
         # Random seed
@@ -425,47 +425,100 @@ def build_density_background(config: Dict) -> Tuple[np.ndarray, np.ndarray, np.n
     )
 
 
-def plot_trajectories(
+def compute_hk_and_numpyro_densities(
     config: Dict,
-    background: Tuple[np.ndarray, np.ndarray, np.ndarray],
-    hk_snaps: List[jax.Array],
-    numpyro_samples: jax.Array | None = None,
-    time_hk: float = 0.0,
-    time_numpyro: float = 0.0,
-):
-    """Plot particle trajectories for HK and optionally NumPyro NUTS."""
-    Xg, Yg, Zg = background
-    has_numpyro = numpyro_samples is not None and numpyro_samples.size > 0
-    ncols = 2 if has_numpyro else 1
-    fig, axes = plt.subplots(1, ncols, figsize=(7 * ncols, 6))
-    axes = np.atleast_1d(axes)
+    final_measure: ParticleMeasure,
+    numpyro_samples: jax.Array | None,
+    kernel: GaussianKernel,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
+    """Compute HK and NumPyro KDE densities on the same grid as the true background."""
+    n = config["grid_size"]
+    xs = jnp.linspace(config["grid_min"], config["grid_max"], n)
+    ys = jnp.linspace(config["grid_min"], config["grid_max"], n)
+    X, Y = jnp.meshgrid(xs, ys)
+    grid_points = jnp.stack([X.ravel(), Y.ravel()], axis=1)
 
-    # HK panel
-    ax = axes[0]
-    ax.contourf(Xg, Yg, Zg, levels=30, cmap="Blues", alpha=0.8)
-    n_particles = hk_snaps[0].shape[0]
-    n_plot = min(40, n_particles)
-    idx = np.linspace(0, n_particles - 1, n_plot, dtype=int)
-    for i in idx:
-        traj = np.stack([np.asarray(s)[i] for s in hk_snaps], axis=0)
-        ax.plot(traj[:, 0], traj[:, 1], "-o", markersize=2, linewidth=1, alpha=0.7)
-    ax.set_title(f"HK Splitting Scheme\n({time_hk:.2f} s)" if time_hk > 0 else "HK Splitting Scheme")
+    # HK density from final particle measure
+    hk_field = final_measure.kernel_density(kernel, grid_points)
+
+    # NumPyro density via KDE with the same kernel (if samples are available)
+    np_field = None
+    if numpyro_samples is not None and numpyro_samples.size > 0:
+        np_measure = ParticleMeasure.initialize(numpyro_samples)
+        np_field = np_measure.kernel_density(kernel, grid_points)
+
+    return (
+        np.asarray(X),
+        np.asarray(Y),
+        np.asarray(hk_field),
+        np.asarray(np_field) if np_field is not None else None,
+    )
+
+
+def plot_density_contours(
+    config: Dict,
+    true_grid: np.ndarray,
+    X: np.ndarray,
+    Y: np.ndarray,
+    hk_field: np.ndarray,
+    numpyro_field: np.ndarray | None,
+):
+    """Single contour plot: true density heatmap with HK and NumPyro contours."""
+    n = config["grid_size"]
+    hk_grid = hk_field.reshape(n, n)
+    np_grid = numpyro_field.reshape(n, n) if numpyro_field is not None else None
+
+    extent = [config["grid_min"], config["grid_max"], config["grid_min"], config["grid_max"]]
+
+    fig, ax = plt.subplots(1, 1, figsize=(6, 5))
+
+    # Background: true density heatmap (grayscale, reversed as in bootstrap)
+    ax.imshow(
+        true_grid,
+        origin="lower",
+        extent=extent,
+        aspect="auto",
+        cmap="gray_r",
+    )
+
+    # Contour levels
+    levels_hk = np.linspace(hk_grid.min(), hk_grid.max(), 8)
+    levels_np = None
+    if np_grid is not None:
+        levels_np = np.linspace(np_grid.min(), np_grid.max(), 8)
+
+    burnt_orange = "#CC5500"
+
+    # HK contours (teal)
+    ax.contour(
+        X,
+        Y,
+        hk_grid,
+        levels=levels_hk,
+        colors="teal",
+        linewidths=1.4,
+        linestyles="solid",
+        label="HK",
+    )
+
+    # NumPyro contours (burnt orange)
+    if np_grid is not None and levels_np is not None:
+        ax.contour(
+            X,
+            Y,
+            np_grid,
+            levels=levels_np,
+            colors=burnt_orange,
+            linewidths=1.4,
+            linestyles="solid",
+        )
+
+    ax.set_title("Banana mixture: HK vs NumPyro")
     ax.set_xlabel("x1")
     ax.set_ylabel("x2")
-    ax.set_aspect("equal", "box")
-
-    if has_numpyro:
-        ax = axes[1]
-        ax.contourf(Xg, Yg, Zg, levels=30, cmap="Blues", alpha=0.8)
-        samp = np.asarray(numpyro_samples)
-        ax.scatter(samp[:, 0], samp[:, 1], s=2, alpha=0.5, c="darkgreen")
-        ax.set_title(f"NumPyro NUTS\n({time_numpyro:.2f} s)" if time_numpyro > 0 else "NumPyro NUTS")
-        ax.set_xlabel("x1")
-        ax.set_ylabel("x2")
-        ax.set_aspect("equal", "box")
 
     plt.tight_layout()
-    plt.savefig("metastability_trajectories.png", dpi=200)
+    plt.savefig("metastability_density_comparison.png", dpi=200)
     plt.close(fig)
 
 
@@ -500,8 +553,8 @@ def main():
     data = generate_banana_data(data_key, config)
     print(f"Generated {config['n_data']} observations from banana mixture.")
 
-    # Background density for visualization
-    background = build_density_background(config)
+    # Background density for visualization (true density grid)
+    Xg, Yg, true_grid = build_density_background(config)
 
     # Initial particles from prior
     prior = GaussianPrior(
@@ -546,15 +599,21 @@ def main():
     print("Computing mode occupancy over time (HK)...")
     occ_hk = mode_occupancy(hk_snaps, banana_centers)
 
-    # Plots
-    print("Creating trajectory and occupancy plots...")
-    plot_trajectories(
+    # Plots: density comparison contours and HK mode occupancy
+    print("Creating density comparison and occupancy plots...")
+    X_grid, Y_grid, hk_field, np_field = compute_hk_and_numpyro_densities(
         config,
-        background,
-        hk_snaps,
-        numpyro_samples=numpyro_samples if numpyro_samples.size > 0 else None,
-        time_hk=time_hk,
-        time_numpyro=time_numpyro,
+        final_measure,
+        numpyro_samples if numpyro_samples.size > 0 else None,
+        kernel,
+    )
+    plot_density_contours(
+        config,
+        true_grid,
+        X_grid,
+        Y_grid,
+        hk_field,
+        np_field,
     )
     plot_mode_occupancy(config, occ_hk)
 
@@ -562,7 +621,7 @@ def main():
     print("\n--- Elapsed times ---")
     print(f"  HK splitting: {time_hk:.2f} s")
     print(f"  NumPyro NUTS: {time_numpyro:.2f} s")
-    print("\nSaved figures 'metastability_trajectories.png' and 'mode_occupancy_over_time.png'.")
+    print("\nSaved figures 'metastability_density_comparison.png' and 'mode_occupancy_over_time.png'.")
 
 
 if __name__ == "__main__":
