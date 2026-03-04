@@ -481,11 +481,21 @@ def plot_density_contours(
         cmap="gray_r",
     )
 
-    # Contour levels
-    levels_hk = np.linspace(hk_grid.min(), hk_grid.max(), 8)
+    # Contour levels (ensure strictly increasing to avoid Matplotlib errors)
+    hk_min, hk_max = float(hk_grid.min()), float(hk_grid.max())
+    if hk_max > hk_min:
+        levels_hk = np.linspace(hk_min, hk_max, 8)
+    else:
+        # Nearly constant field: create a tiny spread for contours
+        levels_hk = np.linspace(hk_min, hk_min + 1e-6, 8)
+
     levels_np = None
     if np_grid is not None:
-        levels_np = np.linspace(np_grid.min(), np_grid.max(), 8)
+        np_min, np_max = float(np_grid.min()), float(np_grid.max())
+        if np_max > np_min:
+            levels_np = np.linspace(np_min, np_max, 8)
+        else:
+            levels_np = np.linspace(np_min, np_min + 1e-6, 8)
 
     burnt_orange = "#CC5500"
 
