@@ -4,13 +4,16 @@ Mode Recovery and Metastability Experiment.
 
 This script compares standard Langevin dynamics (pure Wasserstein-type
 updates on atom locations) against the Hellinger–Kantorovich (HK)
-splitting scheme on a \"galaxy-like\" multimodal dataset. It visualizes
-particle trajectories and mode occupancies over time to highlight the
-ability of HK flows to \"teleport\" mass between modes.
+splitting scheme and NumPyro NUTS on a mixture of banana-shaped
+densities. It visualizes particle trajectories and mode occupancies
+over time to highlight the ability of HK flows to \"teleport\" mass
+between modes. Single long run per method (no bootstrap); elapsed
+times are reported for all three methods.
 """
 
 from __future__ import annotations
 
+import time
 from typing import Dict, List, Tuple
 
 import jax
@@ -25,23 +28,139 @@ from recursive_mixtures import (
     GaussianPrior,
     HellingerKantorovichFlow,
 )
-from recursive_mixtures.utils import generate_mixture_data, true_mixture_density
+
+try:
+    import numpyro
+    import numpyro.distributions as dist
+    from numpyro.infer import MCMC, NUTS
+    HAS_NUMPYRO = True
+except ImportError:
+    HAS_NUMPYRO = False
+
+
+# -----------------------------------------------------------------------------
+# Banana-shaped mixture: log-density, score, sampling
+# -----------------------------------------------------------------------------
+
+def _banana_component_log_density_single(
+    x: jax.Array,
+    c1: jax.Array,
+    c2: jax.Array,
+    b: jax.Array,
+    s1: jax.Array,
+    s2: jax.Array,
+) -> jax.Array:
+    """Log density of one banana component at a single 2D point x. Scalar in, scalar out."""
+    x1, x2 = x[0], x[1]
+    z1 = (x1 - c1) / (s1 + 1e-30)
+    mean2 = c2 + b * (x1 - c1) ** 2
+    z2 = (x2 - mean2) / (s2 + 1e-30)
+    log_p = -0.5 * (z1 ** 2 + z2 ** 2) - jnp.log(2 * jnp.pi * s1 * s2 + 1e-30)
+    return log_p
+
+
+def banana_component_log_density(
+    x: jax.Array,
+    c1: jax.Array,
+    c2: jax.Array,
+    b: jax.Array,
+    s1: jax.Array,
+    s2: jax.Array,
+) -> jax.Array:
+    """Log density of one banana component. x shape (2,) or (N, 2); returns scalar or (N,)."""
+    x = jnp.atleast_2d(x)
+    return jax.vmap(
+        lambda xi: _banana_component_log_density_single(xi, c1, c2, b, s1, s2)
+    )(x).squeeze()
+
+
+def banana_mixture_log_density(
+    x: jax.Array,
+    centers: jax.Array,
+    curvatures: jax.Array,
+    scales: jax.Array,
+    weights: jax.Array,
+) -> jax.Array:
+    """
+    Log of mixture density: log(sum_k w_k p_k(x)).
+    centers (K, 2), curvatures (K,), scales (K, 2) or (K,), weights (K).
+    """
+    x = jnp.atleast_2d(x)
+    K = centers.shape[0]
+    if scales.ndim == 1:
+        scales = jnp.tile(scales[:, None], (1, 2))
+    log_component = jnp.stack([
+        banana_component_log_density(
+            x,
+            centers[k, 0],
+            centers[k, 1],
+            curvatures[k],
+            scales[k, 0],
+            scales[k, 1],
+        )
+        for k in range(K)
+    ], axis=0)
+    log_weighted = jnp.log(weights + 1e-30) + log_component
+    return jax.scipy.special.logsumexp(log_weighted, axis=0).squeeze()
+
+
+def banana_mixture_sample(
+    key: jax.Array,
+    n: int,
+    centers: jax.Array,
+    curvatures: jax.Array,
+    scales: jax.Array,
+    weights: jax.Array,
+) -> jax.Array:
+    """Sample n points from the banana mixture."""
+    K = centers.shape[0]
+    if scales.ndim == 1:
+        scales = jnp.tile(scales[:, None], (1, 2))
+    key_comp, key_x1, key_x2 = jr.split(key, 3)
+    comp = jr.choice(key_comp, K, shape=(n,), p=weights)
+    u1 = jr.normal(key_x1, shape=(n,))
+    u2 = jr.normal(key_x2, shape=(n,))
+    c1 = centers[comp, 0]
+    c2 = centers[comp, 1]
+    b = curvatures[comp]
+    s1 = scales[comp, 0]
+    s2 = scales[comp, 1]
+    x1 = c1 + s1 * u1
+    mean2 = c2 + b * (x1 - c1) ** 2
+    x2 = mean2 + s2 * u2
+    return jnp.stack([x1, x2], axis=1)
+
+
+def banana_mixture_score(
+    x: jax.Array,
+    centers: jax.Array,
+    curvatures: jax.Array,
+    scales: jax.Array,
+    weights: jax.Array,
+) -> jax.Array:
+    """Gradient of log mixture density; x shape (2,) or (N, 2)."""
+    def log_dens(xi):
+        return banana_mixture_log_density(xi, centers, curvatures, scales, weights)
+    grad_fn = jax.grad(log_dens)
+    x = jnp.atleast_2d(x)
+    return jax.vmap(grad_fn)(x).squeeze()
 
 
 def setup_config() -> Dict:
-    """Configuration dictionary for the metastability experiment."""
+    """Configuration dictionary for the metastability experiment (banana mixture)."""
     config = {
-        # Galaxy-like mixture (four well-separated modes)
-        "true_means": jnp.array(
+        # Banana mixture: K components with (center, curvature, scale)
+        "banana_centers": jnp.array(
             [
-                [-6.0, 0.0],
-                [0.0, 6.0],
-                [6.0, 0.0],
-                [0.0, -6.0],
+                [-3.0, 0.0],
+                [3.0, 0.0],
+                [0.0, -3.0],
+                [0.0, 3.0],
             ]
         ),
-        "true_stds": jnp.array([0.6, 0.6, 0.6, 0.6]),
-        "true_weights": jnp.array([0.25, 0.25, 0.25, 0.25]),
+        "banana_curvatures": jnp.array([0.08, -0.08, 0.08, -0.08]),
+        "banana_scales": jnp.array([[1.2, 0.8], [1.2, 0.8], [1.2, 0.8], [1.2, 0.8]]),
+        "banana_weights": jnp.array([0.25, 0.25, 0.25, 0.25]),
         # Data
         "n_data": 2000,
         # Particles
@@ -59,52 +178,57 @@ def setup_config() -> Dict:
         # Prior for HK flow
         "prior_mean": jnp.array([0.0, 0.0]),
         "prior_std": 8.0,
-        # Trajectory recording
-        "n_steps": 400,
-        "record_every": 10,
+        # Trajectory recording: single long run
+        "n_steps": 2000,
+        "record_every": 20,
         # Density grid for background visualization
-        "grid_min": -10.0,
-        "grid_max": 10.0,
+        "grid_min": -8.0,
+        "grid_max": 8.0,
         "grid_size": 100,
+        # NumPyro NUTS
+        "use_numpyro": True,
+        "numpyro_num_warmup": 500,
+        "numpyro_num_samples": 2000,
+        "numpyro_num_chains": 1,
+        "numpyro_seed": 2024,
         # Random seed
         "seed": 2024,
     }
     return config
 
 
-def generate_galaxy_data(
-    key: jax.Array,
-    config: Dict,
-) -> jax.Array:
-    """Generate a galaxy-like 2D mixture dataset."""
-    samples, _ = generate_mixture_data(
+def generate_banana_data(key: jax.Array, config: Dict) -> jax.Array:
+    """Generate 2D data from the banana mixture."""
+    return banana_mixture_sample(
         key,
         config["n_data"],
-        config["true_means"],
-        config["true_stds"],
-        config["true_weights"],
+        config["banana_centers"],
+        config["banana_curvatures"],
+        config["banana_scales"],
+        config["banana_weights"],
     )
-    return samples
 
 
-def log_target_density(
-    x: jax.Array,
-    config: Dict,
-) -> jax.Array:
-    """Log of the true galaxy mixture density at a point x (2D)."""
-    # true_mixture_density accepts (M, D) input
-    dens = true_mixture_density(
-        x[None, :],
-        config["true_means"],
-        config["true_stds"],
-        config["true_weights"],
-    )[0]
-    return jnp.log(dens + 1e-30)
+def log_target_density(x: jax.Array, config: Dict) -> jax.Array:
+    """Log of the banana mixture density at a point x (2D)."""
+    return banana_mixture_log_density(
+        x,
+        config["banana_centers"],
+        config["banana_curvatures"],
+        config["banana_scales"],
+        config["banana_weights"],
+    )
 
 
 def target_score(x: jax.Array, config: Dict) -> jax.Array:
-    """Score ∇_x log p(x) of the true mixture at x."""
-    return jax.grad(lambda x_: log_target_density(x_, config))(x)
+    """Score ∇_x log p(x) of the banana mixture at x."""
+    return banana_mixture_score(
+        x,
+        config["banana_centers"],
+        config["banana_curvatures"],
+        config["banana_scales"],
+        config["banana_weights"],
+    )
 
 
 def langevin_step(
@@ -212,6 +336,92 @@ def run_hk_splitting(
     return measure, traj_snapshots
 
 
+# -----------------------------------------------------------------------------
+# NumPyro: custom banana mixture distribution and NUTS
+# -----------------------------------------------------------------------------
+
+if HAS_NUMPYRO:
+
+    class BananaMixtureDistribution(dist.Distribution):
+        """NumPyro distribution for the banana mixture (fixed params)."""
+
+        def __init__(
+            self,
+            centers: jax.Array,
+            curvatures: jax.Array,
+            scales: jax.Array,
+            weights: jax.Array,
+        ):
+            super().__init__(batch_shape=(), event_shape=(2,))
+            self._centers = centers
+            self._curvatures = curvatures
+            self._scales = scales
+            self._weights = weights
+
+        def sample(self, key, sample_shape=()):
+            n = int(np.prod(sample_shape)) if sample_shape else 1
+            keys = jr.split(key, 2)
+            samples = banana_mixture_sample(
+                keys[0],
+                n,
+                self._centers,
+                self._curvatures,
+                self._scales,
+                self._weights,
+            )
+            if sample_shape:
+                return samples.reshape(sample_shape + (2,))
+            return samples.reshape(2)
+
+        def log_prob(self, value):
+            return banana_mixture_log_density(
+                value,
+                self._centers,
+                self._curvatures,
+                self._scales,
+                self._weights,
+            )
+
+
+def _numpyro_banana_model(config: Dict):
+    """NumPyro model: sample one 2D point from the banana mixture."""
+    numpyro.sample(
+        "x",
+        BananaMixtureDistribution(
+            config["banana_centers"],
+            config["banana_curvatures"],
+            config["banana_scales"],
+            config["banana_weights"],
+        ),
+    )
+
+
+def run_numpyro_nuts(config: Dict) -> Tuple[jax.Array, float]:
+    """
+    Run NUTS to sample from the banana mixture. Returns (samples, elapsed_seconds).
+    samples shape (num_chains * num_samples, 2).
+    """
+    if not HAS_NUMPYRO or not config.get("use_numpyro", True):
+        return jnp.zeros((0, 2)), 0.0
+    kernel = NUTS(_numpyro_banana_model)
+    mcmc = MCMC(
+        kernel,
+        num_warmup=config["numpyro_num_warmup"],
+        num_samples=config["numpyro_num_samples"],
+        num_chains=config["numpyro_num_chains"],
+        progress_bar=True,
+    )
+    key = jr.PRNGKey(config["numpyro_seed"])
+    t0 = time.perf_counter()
+    mcmc.run(key, config=config)
+    elapsed = time.perf_counter() - t0
+    samples = mcmc.get_samples()
+    x = samples["x"]
+    if x.ndim == 2:
+        return x, elapsed
+    return x.reshape(-1, 2), elapsed
+
+
 def assign_modes(points: jax.Array, means: jax.Array) -> jax.Array:
     """
     Assign each point to the nearest mixture component by Euclidean distance.
@@ -250,19 +460,20 @@ def mode_occupancy(
 
 
 def build_density_background(config: Dict) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Precompute true density on a grid for background plotting."""
+    """Precompute banana mixture density on a grid for background plotting."""
     n = config["grid_size"]
     xs = jnp.linspace(config["grid_min"], config["grid_max"], n)
     ys = jnp.linspace(config["grid_min"], config["grid_max"], n)
     X, Y = jnp.meshgrid(xs, ys)
     grid_points = jnp.stack([X.ravel(), Y.ravel()], axis=1)
-
-    dens = true_mixture_density(
+    log_dens = banana_mixture_log_density(
         grid_points,
-        config["true_means"],
-        config["true_stds"],
-        config["true_weights"],
+        config["banana_centers"],
+        config["banana_curvatures"],
+        config["banana_scales"],
+        config["banana_weights"],
     )
+    dens = jnp.exp(log_dens)
     return (
         np.asarray(X),
         np.asarray(Y),
@@ -275,28 +486,44 @@ def plot_trajectories(
     background: Tuple[np.ndarray, np.ndarray, np.ndarray],
     langevin_snaps: List[jax.Array],
     hk_snaps: List[jax.Array],
+    numpyro_samples: jax.Array | None = None,
+    time_langevin: float = 0.0,
+    time_hk: float = 0.0,
+    time_numpyro: float = 0.0,
 ):
-    """Plot particle trajectories for Langevin and HK flows."""
+    """Plot particle trajectories for Langevin, HK, and optionally NumPyro NUTS."""
     Xg, Yg, Zg = background
-
-    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+    has_numpyro = numpyro_samples is not None and numpyro_samples.size > 0
+    ncols = 3 if has_numpyro else 2
+    fig, axes = plt.subplots(1, ncols, figsize=(7 * ncols, 6))
+    if ncols == 2:
+        axes = list(axes)
+    else:
+        axes = list(axes)
 
     titles = ["Langevin Dynamics (pure Wasserstein)", "HK Splitting Scheme"]
     snapshots_list = [langevin_snaps, hk_snaps]
+    times_list = [time_langevin, time_hk]
 
-    for ax, snaps, title in zip(axes, snapshots_list, titles):
+    for ax, snaps, title, t in zip(axes[:2], snapshots_list, titles, times_list):
         ax.contourf(Xg, Yg, Zg, levels=30, cmap="Blues", alpha=0.8)
-
-        # Plot trajectories for a subset of particles
         n_particles = snaps[0].shape[0]
         n_plot = min(40, n_particles)
         idx = np.linspace(0, n_particles - 1, n_plot, dtype=int)
-
         for i in idx:
             traj = np.stack([np.asarray(s)[i] for s in snaps], axis=0)
             ax.plot(traj[:, 0], traj[:, 1], "-o", markersize=2, linewidth=1, alpha=0.7)
+        ax.set_title(f"{title}\n({t:.2f} s)" if t > 0 else title)
+        ax.set_xlabel("x1")
+        ax.set_ylabel("x2")
+        ax.set_aspect("equal", "box")
 
-        ax.set_title(title)
+    if has_numpyro:
+        ax = axes[2]
+        ax.contourf(Xg, Yg, Zg, levels=30, cmap="Blues", alpha=0.8)
+        samp = np.asarray(numpyro_samples)
+        ax.scatter(samp[:, 0], samp[:, 1], s=2, alpha=0.5, c="darkgreen")
+        ax.set_title(f"NumPyro NUTS\n({time_numpyro:.2f} s)" if time_numpyro > 0 else "NumPyro NUTS")
         ax.set_xlabel("x1")
         ax.set_ylabel("x2")
         ax.set_aspect("equal", "box")
@@ -338,15 +565,15 @@ def main():
     config = setup_config()
 
     print("=" * 80)
-    print("Metastability Experiment: Langevin vs HK Splitting")
+    print("Metastability Experiment: Banana Mixture — Langevin vs HK vs NumPyro NUTS")
     print("=" * 80)
 
     key = jr.PRNGKey(config["seed"])
 
-    # Generate galaxy-like data
+    # Generate banana mixture data
     key, data_key = jr.split(key)
-    data = generate_galaxy_data(data_key, config)
-    print(f"Generated {config['n_data']} galaxy-like observations.")
+    data = generate_banana_data(data_key, config)
+    print(f"Generated {config['n_data']} observations from banana mixture.")
 
     # Background density for visualization
     background = build_density_background(config)
@@ -360,22 +587,25 @@ def main():
     key, init_key, hk_prior_key = jr.split(key, 3)
     initial_atoms = prior.sample(init_key, config["n_particles"])
 
-    # Langevin dynamics
+    # Langevin dynamics (single long run, with timing)
     print("\nRunning Langevin dynamics...")
     key, langevin_key = jr.split(key)
+    t0_l = time.perf_counter()
     _, langevin_snaps = run_langevin_dynamics(
         langevin_key,
         initial_atoms,
         config,
     )
+    time_langevin = time.perf_counter() - t0_l
+    print(f"  Langevin elapsed: {time_langevin:.2f} s")
 
-    # HK splitting
+    # HK splitting (single long run, with timing)
     print("Running HK splitting scheme...")
     kernel = GaussianKernel(bandwidth=config["hk_kernel_bandwidth"])
     prior_particles = prior.to_particle_measure(hk_prior_key, config["n_particles"])
     initial_measure = ParticleMeasure.initialize(initial_atoms)
-
     key, hk_key = jr.split(key)
+    t0_hk = time.perf_counter()
     final_measure, hk_snaps = run_hk_splitting(
         hk_key,
         initial_measure,
@@ -385,17 +615,44 @@ def main():
         prior_particles,
         config,
     )
+    time_hk = time.perf_counter() - t0_hk
+    print(f"  HK splitting elapsed: {time_hk:.2f} s")
 
-    # Mode occupancy
-    print("Computing mode occupancy over time...")
-    occ_langevin = mode_occupancy(langevin_snaps, config["true_means"])
-    occ_hk = mode_occupancy(hk_snaps, config["true_means"])
+    # NumPyro NUTS (with timing)
+    numpyro_samples = jnp.zeros((0, 2))
+    time_numpyro = 0.0
+    if config.get("use_numpyro", True) and HAS_NUMPYRO:
+        print("Running NumPyro NUTS on banana mixture...")
+        numpyro_samples, time_numpyro = run_numpyro_nuts(config)
+        print(f"  NumPyro NUTS elapsed: {time_numpyro:.2f} s")
+    else:
+        print("NumPyro disabled or not available; skipping NUTS.")
+
+    # Mode occupancy (banana centers)
+    banana_centers = config["banana_centers"]
+    print("Computing mode occupancy over time (Langevin, HK)...")
+    occ_langevin = mode_occupancy(langevin_snaps, banana_centers)
+    occ_hk = mode_occupancy(hk_snaps, banana_centers)
 
     # Plots
     print("Creating trajectory and occupancy plots...")
-    plot_trajectories(config, background, langevin_snaps, hk_snaps)
+    plot_trajectories(
+        config,
+        background,
+        langevin_snaps,
+        hk_snaps,
+        numpyro_samples=numpyro_samples if numpyro_samples.size > 0 else None,
+        time_langevin=time_langevin,
+        time_hk=time_hk,
+        time_numpyro=time_numpyro,
+    )
     plot_mode_occupancy(config, occ_langevin, occ_hk)
 
+    # Timing summary
+    print("\n--- Elapsed times ---")
+    print(f"  Langevin:    {time_langevin:.2f} s")
+    print(f"  HK splitting: {time_hk:.2f} s")
+    print(f"  NumPyro NUTS: {time_numpyro:.2f} s")
     print("\nSaved figures 'metastability_trajectories.png' and 'mode_occupancy_over_time.png'.")
 
 
