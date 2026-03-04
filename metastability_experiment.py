@@ -31,6 +31,7 @@ from recursive_mixtures import (
 try:
     import numpyro
     import numpyro.distributions as dist
+    from numpyro.distributions import constraints
     from numpyro.infer import MCMC, NUTS
     HAS_NUMPYRO = True
 except ImportError:
@@ -39,68 +40,87 @@ except ImportError:
 
 # -----------------------------------------------------------------------------
 # Banana-shaped mixture: log-density, score, sampling
+# Using base banana from https://tiao.io/post/building-probability-distributions-with-tensorflow-probability-bijector-api/
 # -----------------------------------------------------------------------------
 
-def _banana_component_log_density_single(
-    x: jax.Array,
-    c1: jax.Array,
-    c2: jax.Array,
-    b: jax.Array,
-    s1: jax.Array,
-    s2: jax.Array,
-) -> jax.Array:
-    """Log density of one banana component at a single 2D point x. Scalar in, scalar out."""
-    x1, x2 = x[0], x[1]
-    z1 = (x1 - c1) / (s1 + 1e-30)
-    mean2 = c2 + b * (x1 - c1) ** 2
-    z2 = (x2 - mean2) / (s2 + 1e-30)
-    log_p = -0.5 * (z1 ** 2 + z2 ** 2) - jnp.log(2 * jnp.pi * s1 * s2 + 1e-30)
-    return log_p
+_BANANA_RHO = 0.95
+_BANANA_DET = 1.0 - _BANANA_RHO**2
+_BANANA_INV = (1.0 / _BANANA_DET) * jnp.array(
+    [[1.0, -_BANANA_RHO], [-_BANANA_RHO, 1.0]]
+)
+_BANANA_LOG_NORM = -0.5 * (
+    2.0 * jnp.log(2.0 * jnp.pi) + jnp.log(_BANANA_DET)
+)
+
+
+def _banana_base_log_density_x(x: jax.Array) -> jax.Array:
+    """Log density of base correlated Gaussian N(0, Σ) with ρ=0.95, for a single 2D point x."""
+    x = jnp.atleast_1d(x)
+    dx = x  # mean zero
+    quad = dx @ _BANANA_INV @ dx
+    return _BANANA_LOG_NORM - 0.5 * quad
+
+
+def _banana_component_log_density_single(y: jax.Array, center: jax.Array) -> jax.Array:
+    """
+    Log density of one banana component at a single 2D point y.
+
+    Component is constructed as:
+        x ~ N(0, Σ)
+        z = G(x) with G(x) = [x1, x2 - x1^2 - 1]
+        y = z + center
+    Since G is volume-preserving, p_Y(y) = p_X(G^{-1}(y - center)).
+    """
+    # Shift by component center
+    z = y - center
+    # Inverse transform G^{-1}(z)
+    x1 = z[0]
+    x2 = z[1] + x1**2 + 1.0
+    x = jnp.stack([x1, x2])
+    return _banana_base_log_density_x(x)
 
 
 def banana_component_log_density(
-    x: jax.Array,
+    y: jax.Array,
     c1: jax.Array,
     c2: jax.Array,
     b: jax.Array,
     s1: jax.Array,
     s2: jax.Array,
 ) -> jax.Array:
-    """Log density of one banana component. x shape (2,) or (N, 2); returns scalar or (N,)."""
-    x = jnp.atleast_2d(x)
-    return jax.vmap(
-        lambda xi: _banana_component_log_density_single(xi, c1, c2, b, s1, s2)
-    )(x).squeeze()
+    """
+    Log density of one banana component. y shape (2,) or (N, 2); returns scalar or (N,).
+
+    The extra parameters (b, s1, s2) are unused here but kept for interface compatibility.
+    """
+    center = jnp.array([c1, c2])
+    y = jnp.atleast_2d(y)
+    return jax.vmap(lambda yi: _banana_component_log_density_single(yi, center))(y).squeeze()
 
 
 def banana_mixture_log_density(
-    x: jax.Array,
+    y: jax.Array,
     centers: jax.Array,
     curvatures: jax.Array,
     scales: jax.Array,
     weights: jax.Array,
 ) -> jax.Array:
     """
-    Log of mixture density: log(sum_k w_k p_k(x)).
-    centers (K, 2), curvatures (K,), scales (K, 2) or (K,), weights (K).
+    Log of mixture density: log(sum_k w_k p_k(y)).
+    centers (K, 2), weights (K). Other arguments are ignored for this banana construction.
     """
-    x = jnp.atleast_2d(x)
+    y = jnp.atleast_2d(y)
     K = centers.shape[0]
-    if scales.ndim == 1:
-        scales = jnp.tile(scales[:, None], (1, 2))
-    log_component = jnp.stack([
-        banana_component_log_density(
-            x,
-            centers[k, 0],
-            centers[k, 1],
-            curvatures[k],
-            scales[k, 0],
-            scales[k, 1],
-        )
-        for k in range(K)
-    ], axis=0)
-    # log_component is (K, N), weights (K,) -> broadcast via (K, 1)
-    log_weighted = jnp.log(weights + 1e-30)[:, None] + log_component
+    log_components = jnp.stack(
+        [
+            jax.vmap(
+                lambda yi: _banana_component_log_density_single(yi, centers[k])
+            )(y)
+            for k in range(K)
+        ],
+        axis=0,
+    )  # (K, N)
+    log_weighted = jnp.log(weights + 1e-30)[:, None] + log_components
     return jax.scipy.special.logsumexp(log_weighted, axis=0).squeeze()
 
 
@@ -112,23 +132,32 @@ def banana_mixture_sample(
     scales: jax.Array,
     weights: jax.Array,
 ) -> jax.Array:
-    """Sample n points from the banana mixture."""
+    """
+    Sample n points from the banana mixture.
+
+    For each component:
+        x ~ N(0, Σ) with ρ=0.95,
+        z = G(x) = [x1, x2 - x1^2 - 1],
+        y = z + center_k.
+    """
     K = centers.shape[0]
-    if scales.ndim == 1:
-        scales = jnp.tile(scales[:, None], (1, 2))
-    key_comp, key_x1, key_x2 = jr.split(key, 3)
+    key_comp, key_base = jr.split(key, 2)
+    # Component assignments
     comp = jr.choice(key_comp, K, shape=(n,), p=weights)
-    u1 = jr.normal(key_x1, shape=(n,))
-    u2 = jr.normal(key_x2, shape=(n,))
-    c1 = centers[comp, 0]
-    c2 = centers[comp, 1]
-    b = curvatures[comp]
-    s1 = scales[comp, 0]
-    s2 = scales[comp, 1]
-    x1 = c1 + s1 * u1
-    mean2 = c2 + b * (x1 - c1) ** 2
-    x2 = mean2 + s2 * u2
-    return jnp.stack([x1, x2], axis=1)
+    # Base Gaussian samples
+    Sigma = jnp.array([[1.0, _BANANA_RHO], [_BANANA_RHO, 1.0]])
+    L = jnp.linalg.cholesky(Sigma)
+    base = jr.normal(key_base, shape=(n, 2))
+    x = base @ L.T  # (n, 2)
+    x1 = x[:, 0]
+    x2 = x[:, 1]
+    z1 = x1
+    z2 = x2 - x1**2 - 1.0
+    z = jnp.stack([z1, z2], axis=1)
+    # Shift by component centers
+    c = centers[comp]
+    y = z + c
+    return y
 
 
 def banana_mixture_score(
@@ -301,6 +330,11 @@ if HAS_NUMPYRO:
             self._curvatures = curvatures
             self._scales = scales
             self._weights = weights
+
+        @property
+        def support(self):
+            # 2D continuous random variable
+            return constraints.real_vector
 
         def sample(self, key, sample_shape=()):
             n = int(np.prod(sample_shape)) if sample_shape else 1
