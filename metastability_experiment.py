@@ -2,17 +2,16 @@
 """
 Mode Recovery and Metastability Experiment.
 
-This script compares standard Langevin dynamics (pure Wasserstein-type
-updates on atom locations) against the Hellinger–Kantorovich (HK)
-splitting scheme and NumPyro NUTS on a mixture of banana-shaped
-densities. It visualizes particle trajectories and mode occupancies
-over time to highlight the ability of HK flows to \"teleport\" mass
-between modes. Single long run per method (no bootstrap); elapsed
-times are reported for all three methods.
+This script compares the Hellinger–Kantorovich (HK) splitting scheme
+against NumPyro NUTS on a mixture of banana-shaped densities. Single
+long run per method (no bootstrap). Elapsed times are reported for
+both methods; trajectory and mode-occupancy plots show HK particle
+evolution and NUTS samples.
 """
 
 from __future__ import annotations
 
+import sys
 import time
 from typing import Dict, List, Tuple
 
@@ -100,7 +99,8 @@ def banana_mixture_log_density(
         )
         for k in range(K)
     ], axis=0)
-    log_weighted = jnp.log(weights + 1e-30) + log_component
+    # log_component is (K, N), weights (K,) -> broadcast via (K, 1)
+    log_weighted = jnp.log(weights + 1e-30)[:, None] + log_component
     return jax.scipy.special.logsumexp(log_weighted, axis=0).squeeze()
 
 
@@ -164,22 +164,20 @@ def setup_config() -> Dict:
         # Data
         "n_data": 2000,
         # Particles
-        "n_particles": 200,
-        # Langevin parameters
-        "langevin_step_size": 0.02,
-        "langevin_noise_scale": 0.2,
-        # HK flow parameters
+        "n_particles": 20,
+        # HK flow parameters (runtime: ~ n_steps * (prior_mc_samples + 1) * sinkhorn_num_iters Sinkhorn iters)
         "hk_step_size": 0.05,
         "hk_kernel_bandwidth": 1.0,
         "hk_sinkhorn_reg": 0.05,
+        "hk_sinkhorn_num_iters": 20,
         "hk_wasserstein_weight": 0.2,
         "hk_prior_flow_weight": 0.1,
-        "hk_prior_mc_samples": 5,
+        "hk_prior_mc_samples": 2,
         # Prior for HK flow
         "prior_mean": jnp.array([0.0, 0.0]),
         "prior_std": 8.0,
-        # Trajectory recording: single long run
-        "n_steps": 2000,
+        # Trajectory recording: single long run (reduce n_steps for faster run)
+        "n_steps": 1000,
         "record_every": 20,
         # Density grid for background visualization
         "grid_min": -8.0,
@@ -209,76 +207,6 @@ def generate_banana_data(key: jax.Array, config: Dict) -> jax.Array:
     )
 
 
-def log_target_density(x: jax.Array, config: Dict) -> jax.Array:
-    """Log of the banana mixture density at a point x (2D)."""
-    return banana_mixture_log_density(
-        x,
-        config["banana_centers"],
-        config["banana_curvatures"],
-        config["banana_scales"],
-        config["banana_weights"],
-    )
-
-
-def target_score(x: jax.Array, config: Dict) -> jax.Array:
-    """Score ∇_x log p(x) of the banana mixture at x."""
-    return banana_mixture_score(
-        x,
-        config["banana_centers"],
-        config["banana_curvatures"],
-        config["banana_scales"],
-        config["banana_weights"],
-    )
-
-
-def langevin_step(
-    key: jax.Array,
-    atoms: jax.Array,
-    config: Dict,
-) -> jax.Array:
-    """
-    Single overdamped Langevin step for all particles.
-
-    θ^{k+1} = θ^k + ε ∇ log p(θ^k) + √(2ε) ξ
-    """
-    step_size = config["langevin_step_size"]
-    noise_scale = config["langevin_noise_scale"]
-
-    # Compute scores at all atoms
-    score_fn = lambda theta: target_score(theta, config)
-    scores = jax.vmap(score_fn)(atoms)
-
-    noise = jr.normal(key, shape=atoms.shape)
-    atoms_next = atoms + step_size * scores + jnp.sqrt(2.0 * step_size) * noise_scale * noise
-    return atoms_next
-
-
-def run_langevin_dynamics(
-    key: jax.Array,
-    initial_atoms: jax.Array,
-    config: Dict,
-) -> Tuple[jax.Array, List[jax.Array]]:
-    """
-    Run Langevin dynamics, recording particle positions at regular intervals.
-
-    Returns:
-        final_atoms: final particle locations, shape (N, 2)
-        traj_snapshots: list of arrays of shape (N, 2) at recorded times
-    """
-    atoms = initial_atoms
-    traj_snapshots: List[jax.Array] = [atoms]
-
-    n_steps = config["n_steps"]
-    record_every = config["record_every"]
-
-    keys = jr.split(key, n_steps)
-    for t in range(n_steps):
-        atoms = langevin_step(keys[t], atoms, config)
-        if (t + 1) % record_every == 0:
-            traj_snapshots.append(atoms)
-    return atoms, traj_snapshots
-
-
 def make_hk_flow_for_metastability(
     prior,
     kernel,
@@ -292,6 +220,7 @@ def make_hk_flow_for_metastability(
         step_size=config["hk_step_size"],
         wasserstein_weight=config["hk_wasserstein_weight"],
         sinkhorn_reg=config["hk_sinkhorn_reg"],
+        sinkhorn_num_iters=config.get("hk_sinkhorn_num_iters", 30),
         use_sinkhorn=True,
         prior_particles=prior_particles,
         prior_flow_weight=config["hk_prior_flow_weight"],
@@ -327,11 +256,26 @@ def run_hk_splitting(
     data_len = data_stream.shape[0]
     keys = jr.split(key, n_steps)
 
+    # Simple text progress bar for HK splitting
+    bar_width = 30
+
     for t in range(n_steps):
         x = data_stream[t % data_len]
         measure = flow.step(measure, x, keys[t])
         if (t + 1) % record_every == 0:
             traj_snapshots.append(measure.atoms)
+
+        # Update progress bar
+        progress = (t + 1) / n_steps
+        filled = int(bar_width * progress)
+        bar = "#" * filled + "-" * (bar_width - filled)
+        msg = f"\rHK splitting [{bar}] {t + 1}/{n_steps}"
+        sys.stdout.write(msg)
+        sys.stdout.flush()
+
+    # Finish progress bar line
+    sys.stdout.write("\n")
+    sys.stdout.flush()
 
     return measure, traj_snapshots
 
@@ -484,42 +428,34 @@ def build_density_background(config: Dict) -> Tuple[np.ndarray, np.ndarray, np.n
 def plot_trajectories(
     config: Dict,
     background: Tuple[np.ndarray, np.ndarray, np.ndarray],
-    langevin_snaps: List[jax.Array],
     hk_snaps: List[jax.Array],
     numpyro_samples: jax.Array | None = None,
-    time_langevin: float = 0.0,
     time_hk: float = 0.0,
     time_numpyro: float = 0.0,
 ):
-    """Plot particle trajectories for Langevin, HK, and optionally NumPyro NUTS."""
+    """Plot particle trajectories for HK and optionally NumPyro NUTS."""
     Xg, Yg, Zg = background
     has_numpyro = numpyro_samples is not None and numpyro_samples.size > 0
-    ncols = 3 if has_numpyro else 2
+    ncols = 2 if has_numpyro else 1
     fig, axes = plt.subplots(1, ncols, figsize=(7 * ncols, 6))
-    if ncols == 2:
-        axes = list(axes)
-    else:
-        axes = list(axes)
+    axes = np.atleast_1d(axes)
 
-    titles = ["Langevin Dynamics (pure Wasserstein)", "HK Splitting Scheme"]
-    snapshots_list = [langevin_snaps, hk_snaps]
-    times_list = [time_langevin, time_hk]
-
-    for ax, snaps, title, t in zip(axes[:2], snapshots_list, titles, times_list):
-        ax.contourf(Xg, Yg, Zg, levels=30, cmap="Blues", alpha=0.8)
-        n_particles = snaps[0].shape[0]
-        n_plot = min(40, n_particles)
-        idx = np.linspace(0, n_particles - 1, n_plot, dtype=int)
-        for i in idx:
-            traj = np.stack([np.asarray(s)[i] for s in snaps], axis=0)
-            ax.plot(traj[:, 0], traj[:, 1], "-o", markersize=2, linewidth=1, alpha=0.7)
-        ax.set_title(f"{title}\n({t:.2f} s)" if t > 0 else title)
-        ax.set_xlabel("x1")
-        ax.set_ylabel("x2")
-        ax.set_aspect("equal", "box")
+    # HK panel
+    ax = axes[0]
+    ax.contourf(Xg, Yg, Zg, levels=30, cmap="Blues", alpha=0.8)
+    n_particles = hk_snaps[0].shape[0]
+    n_plot = min(40, n_particles)
+    idx = np.linspace(0, n_particles - 1, n_plot, dtype=int)
+    for i in idx:
+        traj = np.stack([np.asarray(s)[i] for s in hk_snaps], axis=0)
+        ax.plot(traj[:, 0], traj[:, 1], "-o", markersize=2, linewidth=1, alpha=0.7)
+    ax.set_title(f"HK Splitting Scheme\n({time_hk:.2f} s)" if time_hk > 0 else "HK Splitting Scheme")
+    ax.set_xlabel("x1")
+    ax.set_ylabel("x2")
+    ax.set_aspect("equal", "box")
 
     if has_numpyro:
-        ax = axes[2]
+        ax = axes[1]
         ax.contourf(Xg, Yg, Zg, levels=30, cmap="Blues", alpha=0.8)
         samp = np.asarray(numpyro_samples)
         ax.scatter(samp[:, 0], samp[:, 1], s=2, alpha=0.5, c="darkgreen")
@@ -533,29 +469,18 @@ def plot_trajectories(
     plt.close(fig)
 
 
-def plot_mode_occupancy(
-    config: Dict,
-    occ_langevin: np.ndarray,
-    occ_hk: np.ndarray,
-):
-    """Plot mode occupancy over snapshots for Langevin vs HK."""
-    T_snap, K = occ_langevin.shape
+def plot_mode_occupancy(config: Dict, occ_hk: np.ndarray):
+    """Plot mode occupancy over snapshots for HK flow."""
+    T_snap, K = occ_hk.shape
     times = np.arange(T_snap) * config["record_every"]
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5), sharey=True)
-
+    fig, ax = plt.subplots(figsize=(7, 5))
     for k in range(K):
-        axes[0].plot(times, occ_langevin[:, k], label=f"Mode {k+1}")
-    axes[0].set_title("Mode occupancy - Langevin")
-    axes[0].set_xlabel("Step")
-    axes[0].set_ylabel("Fraction of particles")
-    axes[0].legend(loc="best")
-
-    for k in range(K):
-        axes[1].plot(times, occ_hk[:, k], label=f"Mode {k+1}")
-    axes[1].set_title("Mode occupancy - HK")
-    axes[1].set_xlabel("Step")
-
+        ax.plot(times, occ_hk[:, k], label=f"Mode {k+1}")
+    ax.set_title("Mode occupancy - HK")
+    ax.set_xlabel("Step")
+    ax.set_ylabel("Fraction of particles")
+    ax.legend(loc="best")
     plt.tight_layout()
     plt.savefig("mode_occupancy_over_time.png", dpi=200)
     plt.close(fig)
@@ -565,7 +490,7 @@ def main():
     config = setup_config()
 
     print("=" * 80)
-    print("Metastability Experiment: Banana Mixture — Langevin vs HK vs NumPyro NUTS")
+    print("Metastability Experiment: Banana Mixture — HK vs NumPyro NUTS (no bootstrap)")
     print("=" * 80)
 
     key = jr.PRNGKey(config["seed"])
@@ -578,7 +503,7 @@ def main():
     # Background density for visualization
     background = build_density_background(config)
 
-    # Common initial particles: sample from a broad prior
+    # Initial particles from prior
     prior = GaussianPrior(
         mean=config["prior_mean"],
         std=config["prior_std"],
@@ -587,20 +512,8 @@ def main():
     key, init_key, hk_prior_key = jr.split(key, 3)
     initial_atoms = prior.sample(init_key, config["n_particles"])
 
-    # Langevin dynamics (single long run, with timing)
-    print("\nRunning Langevin dynamics...")
-    key, langevin_key = jr.split(key)
-    t0_l = time.perf_counter()
-    _, langevin_snaps = run_langevin_dynamics(
-        langevin_key,
-        initial_atoms,
-        config,
-    )
-    time_langevin = time.perf_counter() - t0_l
-    print(f"  Langevin elapsed: {time_langevin:.2f} s")
-
     # HK splitting (single long run, with timing)
-    print("Running HK splitting scheme...")
+    print("\nRunning HK splitting scheme...")
     kernel = GaussianKernel(bandwidth=config["hk_kernel_bandwidth"])
     prior_particles = prior.to_particle_measure(hk_prior_key, config["n_particles"])
     initial_measure = ParticleMeasure.initialize(initial_atoms)
@@ -628,10 +541,9 @@ def main():
     else:
         print("NumPyro disabled or not available; skipping NUTS.")
 
-    # Mode occupancy (banana centers)
+    # Mode occupancy (banana centers) for HK
     banana_centers = config["banana_centers"]
-    print("Computing mode occupancy over time (Langevin, HK)...")
-    occ_langevin = mode_occupancy(langevin_snaps, banana_centers)
+    print("Computing mode occupancy over time (HK)...")
     occ_hk = mode_occupancy(hk_snaps, banana_centers)
 
     # Plots
@@ -639,18 +551,15 @@ def main():
     plot_trajectories(
         config,
         background,
-        langevin_snaps,
         hk_snaps,
         numpyro_samples=numpyro_samples if numpyro_samples.size > 0 else None,
-        time_langevin=time_langevin,
         time_hk=time_hk,
         time_numpyro=time_numpyro,
     )
-    plot_mode_occupancy(config, occ_langevin, occ_hk)
+    plot_mode_occupancy(config, occ_hk)
 
     # Timing summary
     print("\n--- Elapsed times ---")
-    print(f"  Langevin:    {time_langevin:.2f} s")
     print(f"  HK splitting: {time_hk:.2f} s")
     print(f"  NumPyro NUTS: {time_numpyro:.2f} s")
     print("\nSaved figures 'metastability_trajectories.png' and 'mode_occupancy_over_time.png'.")
