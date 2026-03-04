@@ -195,18 +195,20 @@ def setup_config() -> Dict:
         # Particles (match fast bootstrap settings)
         "n_particles": 50,
         # HK flow parameters (runtime: ~ n_steps * (prior_mc_samples + 1) * sinkhorn_num_iters Sinkhorn iters)
-        "hk_step_size": 0.05,
-        "hk_kernel_bandwidth": 1.0,
+        # Smaller step size / Wasserstein weight to keep atoms near the banana region,
+        # and larger kernel bandwidth so KDE is non-zero across the grid.
+        "hk_step_size": 0.02,
+        "hk_kernel_bandwidth": 3.0,
         "hk_sinkhorn_reg": 0.05,
         "hk_sinkhorn_num_iters": 25,
-        "hk_wasserstein_weight": 0.1,
+        "hk_wasserstein_weight": 0.05,
         "hk_prior_flow_weight": 0.1,
         "hk_prior_mc_samples": 1,
         # Prior for HK flow
         "prior_mean": jnp.array([0.0, 0.0]),
         "prior_std": 8.0,
-        # Trajectory recording: single long run (reduce n_steps for faster run)
-        "n_steps": 1000,
+        # Trajectory recording: single long run (slightly shorter for stability)
+        "n_steps": 600,
         "record_every": 20,
         # Density grid for background visualization (match fast bootstrap size)
         "grid_min": -8.0,
@@ -533,16 +535,15 @@ def plot_density_contours(
 
     burnt_orange = "#CC5500"
 
-    # HK contours (teal)
+    # HK contours (teal, dashed) so they are visually distinct
     ax.contour(
         X,
         Y,
         hk_grid,
         levels=levels_hk,
         colors="teal",
-        linewidths=1.4,
-        linestyles="solid",
-        label="HK",
+        linewidths=1.6,
+        linestyles="dashed",
     )
 
     # NumPyro contours (burnt orange)
@@ -553,7 +554,7 @@ def plot_density_contours(
             np_grid,
             levels=levels_np,
             colors=burnt_orange,
-            linewidths=1.4,
+            linewidths=1.6,
             linestyles="solid",
         )
 
@@ -651,6 +652,26 @@ def main():
         numpyro_samples if numpyro_samples.size > 0 else None,
         kernel,
     )
+
+    # Debug prints: inspect HK and NumPyro density fields and final HK measure
+    hk_min, hk_max = float(hk_field.min()), float(hk_field.max())
+    print(f"HK KDE density range on grid: min={hk_min:.3e}, max={hk_max:.3e}")
+    if np_field is not None:
+        np_min, np_max = float(np_field.min()), float(np_field.max())
+        print(f"NumPyro KDE density range on grid: min={np_min:.3e}, max={np_max:.3e}")
+    else:
+        print("NumPyro KDE not available (no samples).")
+
+    # Final HK weights summary
+    log_w = np.asarray(final_measure.log_weights)
+    w_unnorm = np.exp(log_w - log_w.max())
+    w = w_unnorm / w_unnorm.sum()
+    print(
+        "Final HK weights: "
+        f"min={w.min():.3e}, max={w.max():.3e}, "
+        f"mean={w.mean():.3e}"
+    )
+
     plot_density_contours(
         config,
         true_grid,
