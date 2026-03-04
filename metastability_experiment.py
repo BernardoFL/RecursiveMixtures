@@ -161,32 +161,32 @@ def setup_config() -> Dict:
         "banana_curvatures": jnp.array([0.08, -0.08, 0.08, -0.08]),
         "banana_scales": jnp.array([[1.2, 0.8], [1.2, 0.8], [1.2, 0.8], [1.2, 0.8]]),
         "banana_weights": jnp.array([0.25, 0.25, 0.25, 0.25]),
-        # Data
-        "n_data": 2000,
-        # Particles
-        "n_particles": 20,
+        # Data (match fast bootstrap settings)
+        "n_data": 200,
+        # Particles (match fast bootstrap settings)
+        "n_particles": 50,
         # HK flow parameters (runtime: ~ n_steps * (prior_mc_samples + 1) * sinkhorn_num_iters Sinkhorn iters)
         "hk_step_size": 0.05,
         "hk_kernel_bandwidth": 1.0,
         "hk_sinkhorn_reg": 0.05,
-        "hk_sinkhorn_num_iters": 20,
-        "hk_wasserstein_weight": 0.2,
+        "hk_sinkhorn_num_iters": 25,
+        "hk_wasserstein_weight": 0.1,
         "hk_prior_flow_weight": 0.1,
-        "hk_prior_mc_samples": 2,
+        "hk_prior_mc_samples": 1,
         # Prior for HK flow
         "prior_mean": jnp.array([0.0, 0.0]),
         "prior_std": 8.0,
         # Trajectory recording: single long run (reduce n_steps for faster run)
         "n_steps": 1000,
         "record_every": 20,
-        # Density grid for background visualization
+        # Density grid for background visualization (match fast bootstrap size)
         "grid_min": -8.0,
         "grid_max": 8.0,
-        "grid_size": 100,
-        # NumPyro NUTS
+        "grid_size": 35,
+        # NumPyro NUTS (match fast bootstrap settings)
         "use_numpyro": True,
-        "numpyro_num_warmup": 500,
-        "numpyro_num_samples": 2000,
+        "numpyro_num_warmup": 200,
+        "numpyro_num_samples": 400,
         "numpyro_num_chains": 1,
         "numpyro_seed": 2024,
         # Random seed
