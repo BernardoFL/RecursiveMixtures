@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional, Tuple, Union
+from typing import Callable, Optional, Tuple, Union
 
 import jax
 import jax.numpy as jnp
@@ -187,6 +187,156 @@ class NewtonHellingerFlow(GradientFlow):
         ).normalize()
 
 
+class NewtonFlow(GradientFlow):
+    """
+    Newton recursive flow for mixing measures.
+    
+    This implements the update
+    
+        μ_{n+1}(dθ) = (1 - α_n) μ_n(dθ)
+                       + α_n * k(x_{n+1}, θ) μ_n(dθ)
+                         / ∫ k(x_{n+1}, θ) μ_n(dθ),
+    
+    discretized for a particle measure μ_n = Σ_i w_i δ_{θ_i} as
+    
+        w_i^{(n+1)} = (1 - α_n) w_i^{(n)}
+                      + α_n * ẇ_i(x_{n+1}),
+    
+    where
+    
+        ẇ_i(x) = k(x, θ_i) w_i^{(n)} / Σ_j k(x, θ_j) w_j^{(n)}.
+    
+    Atom locations θ_i are kept fixed; only the weights are updated.
+    """
+
+    def __init__(
+        self,
+        kernel: Kernel,
+        prior: Prior,
+        step_size: float = 0.1,
+        alpha_fn: Optional[Callable[[int], float]] = None,
+        alpha_seq: Optional[Array] = None,
+    ):
+        """
+        Initialize Newton flow.
+
+        Args:
+            kernel: Likelihood kernel k(x, θ)
+            prior: Prior distribution (kept for API consistency; not used directly)
+            step_size: Default constant step size α when no schedule is provided
+            alpha_fn: Optional callable providing α_n given step index n
+            alpha_seq: Optional array of precomputed α_n values
+        """
+        super().__init__(kernel, prior, step_size)
+        self.alpha_fn = alpha_fn
+        self.alpha_seq = alpha_seq
+
+    def _get_alpha(self, n: int) -> float:
+        """
+        Get α_n for step index n.
+
+        Precedence:
+            1. alpha_seq[n] if provided
+            2. alpha_fn(n) if provided
+            3. self.step_size as constant α
+        """
+        if self.alpha_seq is not None:
+            if n < 0 or n >= self.alpha_seq.shape[0]:
+                raise IndexError(
+                    f"alpha_seq has length {self.alpha_seq.shape[0]}, "
+                    f"but requested index n={n}."
+                )
+            return float(self.alpha_seq[n])
+
+        if self.alpha_fn is not None:
+            return float(self.alpha_fn(n))
+
+        return float(self.step_size)
+
+    def _newton_update(
+        self,
+        measure: ParticleMeasure,
+        data: Array,
+        alpha: float,
+    ) -> ParticleMeasure:
+        """
+        Core Newton update for a single data point and given α.
+        """
+        x = jnp.atleast_1d(data)
+        if x.ndim == 1:
+            x = x[None, :]  # (1, D)
+
+        # Kernel evaluations k(x, θ_i) for all atoms at this data point
+        K = self.kernel.gram(x, measure.atoms)  # (1, N)
+        k_vals = K[0]  # (N,)
+
+        # Current normalized weights
+        weights = measure.weights  # (N,)
+
+        # Normalization Z = Σ_j w_j k(x, θ_j)
+        Z = jnp.dot(weights, k_vals) + 1e-30
+
+        # Posterior-like weights ẇ_i(x)
+        posterior_weights = (weights * k_vals) / Z
+
+        # Convex combination: w^{(n+1)} = (1 - α) w^{(n)} + α ẇ
+        new_weights = (1.0 - alpha) * weights + alpha * posterior_weights
+
+        # Convert back to log-weights, guard against underflow, then normalize
+        new_log_weights = jnp.log(new_weights + 1e-30)
+
+        return ParticleMeasure(
+            atoms=measure.atoms,
+            log_weights=new_log_weights,
+        ).normalize()
+
+    def step(
+        self,
+        measure: ParticleMeasure,
+        data: Array,
+        key: Optional[Array] = None,
+    ) -> ParticleMeasure:
+        """
+        Single Newton step with constant α = step_size.
+
+        This is mainly for compatibility with the base class; for
+        time-varying α_n, use the run() method of this class.
+        """
+        del key  # Unused; deterministic update
+        return self._newton_update(measure, data, float(self.step_size))
+
+    def run(
+        self,
+        measure: ParticleMeasure,
+        data_stream: Array,
+        key: Optional[Array] = None,
+        store_every: int = 1,
+    ) -> Tuple[ParticleMeasure, list[ParticleMeasure]]:
+        """
+        Run Newton flow on a stream of data with schedule (α_n).
+
+        This mirrors GradientFlow.run but uses α_n determined by
+        alpha_seq / alpha_fn / step_size for each step n.
+        """
+        del key  # Deterministic; no randomness needed
+
+        data_stream = jnp.atleast_2d(data_stream)
+        if data_stream.shape[0] == 1 and data_stream.shape[1] > 1:
+            # Handle 1D data passed as (1, T) instead of (T, 1)
+            data_stream = data_stream.T
+
+        history: list[ParticleMeasure] = [measure]
+
+        for t, data_point in enumerate(data_stream):
+            alpha_t = self._get_alpha(t)
+            measure = self._newton_update(measure, data_point, alpha_t)
+
+            if (t + 1) % store_every == 0:
+                history.append(measure)
+
+        return measure, history
+
+
 class HellingerKantorovichFlow(GradientFlow):
     """
     Algorithm B: Hellinger-Kantorovich Flow.
@@ -212,10 +362,11 @@ class HellingerKantorovichFlow(GradientFlow):
         prior_particles: Optional[ParticleMeasure] = None,
         prior_flow_weight: float = 0.0,
         prior_mc_samples: int = 1,
+        sinkhorn_num_iters: int = 30,
     ):
         """
         Initialize Hellinger-Kantorovich flow.
-        
+
         Args:
             kernel: Likelihood kernel k(x, θ)
             prior: Prior distribution
@@ -224,6 +375,9 @@ class HellingerKantorovichFlow(GradientFlow):
             sinkhorn_reg: Sinkhorn regularization parameter ε
             use_sinkhorn: Whether to add Sinkhorn regularization drift
             prior_particles: Particle representation of prior (computed if None)
+            prior_flow_weight: Weight λ for Sinkhorn prior force in Hellinger step
+            prior_mc_samples: Number M of Monte Carlo prior measures per step
+            sinkhorn_num_iters: Sinkhorn iterations per OT solve (fewer = faster)
         """
         super().__init__(kernel, prior, step_size)
         self.likelihood_functional = LogLikelihoodFunctional(kernel)
@@ -233,6 +387,7 @@ class HellingerKantorovichFlow(GradientFlow):
         self._prior_particles = prior_particles
         self.prior_flow_weight = prior_flow_weight
         self.prior_mc_samples = prior_mc_samples
+        self.sinkhorn_num_iters = sinkhorn_num_iters
     
     def _get_prior_particles(
         self,
@@ -309,6 +464,7 @@ class HellingerKantorovichFlow(GradientFlow):
             measure,
             prior_measure,
             reg=self.sinkhorn_reg,
+            num_iters=self.sinkhorn_num_iters,
         )
     
     def step(
@@ -360,6 +516,7 @@ class HellingerKantorovichFlow(GradientFlow):
             prior_func = SinkhornPriorFunctional(
                 prior_measures=prior_measures,
                 reg=self.sinkhorn_reg,
+                num_iters=self.sinkhorn_num_iters,
             )
             h = prior_func.variational_derivative(measure)
             V = g + self.prior_flow_weight * h
@@ -386,6 +543,98 @@ class HellingerKantorovichFlow(GradientFlow):
         return ParticleMeasure(
             atoms=new_atoms,
             log_weights=new_log_weights,
+        ).normalize()
+
+
+class NewtonWassersteinFlow(HellingerKantorovichFlow):
+    """
+    Newton-Wasserstein flow: updates only atom locations, keeping weights fixed.
+
+    This is the Wasserstein counterpart to Newton-Hellinger:
+    it performs a location update in the Wasserstein direction
+    (with optional Sinkhorn drift toward the prior) but does not
+    change particle weights.
+    """
+
+    def __init__(
+        self,
+        kernel: Kernel,
+        prior: Prior,
+        step_size: float = 0.1,
+        wasserstein_weight: float = 1.0,
+        sinkhorn_reg: float = 0.1,
+        use_sinkhorn: bool = True,
+        prior_particles: Optional[ParticleMeasure] = None,
+        sinkhorn_num_iters: int = 30,
+    ):
+        """
+        Initialize Newton-Wasserstein flow.
+
+        Args:
+            kernel: Likelihood kernel k(x, θ)
+            prior: Prior distribution
+            step_size: Step size α for location updates
+            wasserstein_weight: Weight for atom updates
+            sinkhorn_reg: Sinkhorn regularization parameter ε for drift
+            use_sinkhorn: Whether to add Sinkhorn regularization drift
+            prior_particles: Particle representation of prior (used for drift)
+            sinkhorn_num_iters: Sinkhorn iterations per OT solve (fewer = faster)
+        """
+        # We reuse HellingerKantorovichFlow's infrastructure for velocity + drift,
+        # but disable any Hellinger prior force by setting prior_flow_weight=0
+        # and prior_mc_samples=0 (weights are never updated here).
+        super().__init__(
+            kernel=kernel,
+            prior=prior,
+            step_size=step_size,
+            wasserstein_weight=wasserstein_weight,
+            sinkhorn_reg=sinkhorn_reg,
+            use_sinkhorn=use_sinkhorn,
+            prior_particles=prior_particles,
+            prior_flow_weight=0.0,
+            prior_mc_samples=0,
+            sinkhorn_num_iters=sinkhorn_num_iters,
+        )
+
+    def step(
+        self,
+        measure: ParticleMeasure,
+        data: Array,
+        key: Optional[Array] = None,
+    ) -> ParticleMeasure:
+        """
+        Perform a Newton-Wasserstein step (atom update only).
+
+        Args:
+            measure: Current particle measure
+            data: New data point(s), shape (D,) or (M, D)
+            key: JAX random key (for Sinkhorn drift if enabled)
+
+        Returns:
+            Updated measure with new atom locations and unchanged weights.
+        """
+        data = jnp.atleast_1d(data)
+        if data.ndim == 1:
+            data = data[None, :]
+
+        # Wasserstein velocity from the kernel gradient
+        velocity = self._compute_velocity(measure, data)
+
+        # Optional Sinkhorn regularization drift toward the prior
+        if self.use_sinkhorn and key is not None:
+            prior_measure = self._get_prior_particles(
+                key,
+                measure.n_particles,
+            )
+            sinkhorn_drift = self._compute_sinkhorn_drift(measure, prior_measure)
+            velocity = velocity + self.sinkhorn_reg * sinkhorn_drift
+
+        new_atoms = measure.atoms + self.step_size * self.wasserstein_weight * velocity
+
+        # Keep log_weights unchanged; normalize for numerical stability only
+        return ParticleMeasure(
+            atoms=new_atoms,
+            log_weights=measure.log_weights,
         ).normalize()
 
 
@@ -750,7 +999,12 @@ def create_flow(
     Factory function for creating gradient flows.
     
     Args:
-        algorithm: One of 'newton_hellinger', 'hk', 'repulsive', 'covariate'
+        algorithm: One of
+            'newton', 'newton_flow',
+            'newton_hellinger', 'hellinger', 'a',
+            'hk', 'hellinger_kantorovich', 'b',
+            'repulsive', 'mmd', 'c',
+            'covariate', 'regression', 'd'
         kernel: Kernel function
         prior: Prior distribution
         **kwargs: Additional arguments for specific flow types
@@ -759,6 +1013,8 @@ def create_flow(
         Configured GradientFlow instance
     """
     flows = {
+        'newton': NewtonFlow,
+        'newton_flow': NewtonFlow,
         'newton_hellinger': NewtonHellingerFlow,
         'hellinger': NewtonHellingerFlow,
         'a': NewtonHellingerFlow,
