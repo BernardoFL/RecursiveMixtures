@@ -27,15 +27,7 @@ from recursive_mixtures import (
     GaussianPrior,
     HellingerKantorovichFlow,
 )
-
-try:
-    import numpyro
-    import numpyro.distributions as dist
-    from numpyro.distributions import constraints
-    from numpyro.infer import MCMC, NUTS
-    HAS_NUMPYRO = True
-except ImportError:
-    HAS_NUMPYRO = False
+from recursive_mixtures.flows import NewtonHellingerFlow, NewtonWassersteinFlow
 
 
 # -----------------------------------------------------------------------------
@@ -195,31 +187,25 @@ def setup_config() -> Dict:
         # Particles (match fast bootstrap settings)
         "n_particles": 50,
         # HK flow parameters (runtime: ~ n_steps * (prior_mc_samples + 1) * sinkhorn_num_iters Sinkhorn iters)
-        # Smaller step size / Wasserstein weight to keep atoms near the banana region,
-        # and larger kernel bandwidth so KDE is non-zero across the grid.
-        "hk_step_size": 0.02,
-        "hk_kernel_bandwidth": 3.0,
+        # Smaller step/Wasserstein weight so atoms move more conservatively and stay closer together.
+        # Kernel bandwidth kept small so KDE still tracks the data closely.
+        "hk_step_size": 0.01,
+        "hk_kernel_bandwidth": 0.8,
         "hk_sinkhorn_reg": 0.05,
         "hk_sinkhorn_num_iters": 25,
-        "hk_wasserstein_weight": 0.05,
+        "hk_wasserstein_weight": 0.03,
         "hk_prior_flow_weight": 0.1,
         "hk_prior_mc_samples": 1,
         # Prior for HK flow
         "prior_mean": jnp.array([0.0, 0.0]),
         "prior_std": 8.0,
-        # Trajectory recording: single long run (slightly shorter for stability)
-        "n_steps": 600,
+        # Trajectory recording: single long run (shorter, faster run)
+        "n_steps": 100,
         "record_every": 20,
-        # Density grid for background visualization (match fast bootstrap size)
+        # Density grid for background visualization (finer resolution heatmap)
         "grid_min": -8.0,
         "grid_max": 8.0,
-        "grid_size": 35,
-        # NumPyro NUTS
-        "use_numpyro": True,
-        "numpyro_num_warmup": 200,
-        "numpyro_num_samples": 1000,
-        "numpyro_num_chains": 1,
-        "numpyro_seed": 2024,
+        "grid_size": 80,
         # Random seed
         "seed": 2024,
     }
@@ -258,6 +244,38 @@ def make_hk_flow_for_metastability(
         prior_mc_samples=config["hk_prior_mc_samples"],
     )
     return flow
+
+
+def make_newton_hellinger_flow_for_metastability(
+    prior,
+    kernel,
+    config: Dict,
+) -> NewtonHellingerFlow:
+    """Configure a Newton-Hellinger flow (weights only, fixed atoms)."""
+    return NewtonHellingerFlow(
+        kernel=kernel,
+        prior=prior,
+        step_size=config["hk_step_size"],
+    )
+
+
+def make_newton_wasserstein_flow_for_metastability(
+    prior,
+    kernel,
+    prior_particles: ParticleMeasure,
+    config: Dict,
+) -> NewtonWassersteinFlow:
+    """Configure a Newton-Wasserstein flow (atoms only, fixed weights)."""
+    return NewtonWassersteinFlow(
+        kernel=kernel,
+        prior=prior,
+        step_size=config["hk_step_size"],
+        wasserstein_weight=config["hk_wasserstein_weight"],
+        sinkhorn_reg=config["hk_sinkhorn_reg"],
+        use_sinkhorn=True,
+        prior_particles=prior_particles,
+        sinkhorn_num_iters=config.get("hk_sinkhorn_num_iters", 30),
+    )
 
 
 def run_hk_splitting(
@@ -309,97 +327,6 @@ def run_hk_splitting(
     sys.stdout.flush()
 
     return measure, traj_snapshots
-
-
-# -----------------------------------------------------------------------------
-# NumPyro: custom banana mixture distribution and NUTS
-# -----------------------------------------------------------------------------
-
-if HAS_NUMPYRO:
-
-    class BananaMixtureDistribution(dist.Distribution):
-        """NumPyro distribution for the banana mixture (fixed params)."""
-
-        def __init__(
-            self,
-            centers: jax.Array,
-            curvatures: jax.Array,
-            scales: jax.Array,
-            weights: jax.Array,
-        ):
-            super().__init__(batch_shape=(), event_shape=(2,))
-            self._centers = centers
-            self._curvatures = curvatures
-            self._scales = scales
-            self._weights = weights
-
-        @property
-        def support(self):
-            # 2D continuous random variable
-            return constraints.real_vector
-
-        def sample(self, key, sample_shape=()):
-            n = int(np.prod(sample_shape)) if sample_shape else 1
-            keys = jr.split(key, 2)
-            samples = banana_mixture_sample(
-                keys[0],
-                n,
-                self._centers,
-                self._curvatures,
-                self._scales,
-                self._weights,
-            )
-            if sample_shape:
-                return samples.reshape(sample_shape + (2,))
-            return samples.reshape(2)
-
-        def log_prob(self, value):
-            return banana_mixture_log_density(
-                value,
-                self._centers,
-                self._curvatures,
-                self._scales,
-                self._weights,
-            )
-
-
-def _numpyro_banana_model(config: Dict):
-    """NumPyro model: sample one 2D point from the banana mixture."""
-    numpyro.sample(
-        "x",
-        BananaMixtureDistribution(
-            config["banana_centers"],
-            config["banana_curvatures"],
-            config["banana_scales"],
-            config["banana_weights"],
-        ),
-    )
-
-
-def run_numpyro_nuts(config: Dict) -> Tuple[jax.Array, float]:
-    """
-    Run NUTS to sample from the banana mixture. Returns (samples, elapsed_seconds).
-    samples shape (num_chains * num_samples, 2).
-    """
-    if not HAS_NUMPYRO or not config.get("use_numpyro", True):
-        return jnp.zeros((0, 2)), 0.0
-    kernel = NUTS(_numpyro_banana_model)
-    mcmc = MCMC(
-        kernel,
-        num_warmup=config["numpyro_num_warmup"],
-        num_samples=config["numpyro_num_samples"],
-        num_chains=config["numpyro_num_chains"],
-        progress_bar=True,
-    )
-    key = jr.PRNGKey(config["numpyro_seed"])
-    t0 = time.perf_counter()
-    mcmc.run(key, config=config)
-    elapsed = time.perf_counter() - t0
-    samples = mcmc.get_samples()
-    x = samples["x"]
-    if x.ndim == 2:
-        return x, elapsed
-    return x.reshape(-1, 2), elapsed
 
 
 def assign_modes(points: jax.Array, means: jax.Array) -> jax.Array:
@@ -461,33 +388,30 @@ def build_density_background(config: Dict) -> Tuple[np.ndarray, np.ndarray, np.n
     )
 
 
-def compute_hk_and_numpyro_densities(
+def compute_flow_densities(
     config: Dict,
-    final_measure: ParticleMeasure,
-    numpyro_samples: jax.Array | None,
+    hk_measure: ParticleMeasure,
+    nh_measure: ParticleMeasure,
+    nw_measure: ParticleMeasure,
     kernel: GaussianKernel,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
-    """Compute HK and NumPyro KDE densities on the same grid as the true background."""
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Compute HK, Newton-H, and Newton-W KDE densities on the same grid."""
     n = config["grid_size"]
     xs = jnp.linspace(config["grid_min"], config["grid_max"], n)
     ys = jnp.linspace(config["grid_min"], config["grid_max"], n)
     X, Y = jnp.meshgrid(xs, ys)
     grid_points = jnp.stack([X.ravel(), Y.ravel()], axis=1)
 
-    # HK density from final particle measure
-    hk_field = final_measure.kernel_density(kernel, grid_points)
-
-    # NumPyro density via KDE with the same kernel (if samples are available)
-    np_field = None
-    if numpyro_samples is not None and numpyro_samples.size > 0:
-        np_measure = ParticleMeasure.initialize(numpyro_samples)
-        np_field = np_measure.kernel_density(kernel, grid_points)
+    hk_field = hk_measure.kernel_density(kernel, grid_points)
+    nh_field = nh_measure.kernel_density(kernel, grid_points)
+    nw_field = nw_measure.kernel_density(kernel, grid_points)
 
     return (
         np.asarray(X),
         np.asarray(Y),
         np.asarray(hk_field),
-        np.asarray(np_field) if np_field is not None else None,
+        np.asarray(nh_field),
+        np.asarray(nw_field),
     )
 
 
@@ -497,12 +421,14 @@ def plot_density_contours(
     X: np.ndarray,
     Y: np.ndarray,
     hk_field: np.ndarray,
-    numpyro_field: np.ndarray | None,
+    nh_field: np.ndarray,
+    nw_field: np.ndarray,
 ):
-    """Single contour plot: true density heatmap with HK and NumPyro contours."""
+    """Single contour plot: true density heatmap with HK, Newton-H, and Newton-W contours."""
     n = config["grid_size"]
     hk_grid = hk_field.reshape(n, n)
-    np_grid = numpyro_field.reshape(n, n) if numpyro_field is not None else None
+    nh_grid = nh_field.reshape(n, n)
+    nw_grid = nw_field.reshape(n, n)
 
     extent = [config["grid_min"], config["grid_max"], config["grid_min"], config["grid_max"]]
 
@@ -522,20 +448,21 @@ def plot_density_contours(
     if hk_max > hk_min:
         levels_hk = np.linspace(hk_min, hk_max, 8)
     else:
-        # Nearly constant field: create a tiny spread for contours
         levels_hk = np.linspace(hk_min, hk_min + 1e-6, 8)
 
-    levels_np = None
-    if np_grid is not None:
-        np_min, np_max = float(np_grid.min()), float(np_grid.max())
-        if np_max > np_min:
-            levels_np = np.linspace(np_min, np_max, 8)
-        else:
-            levels_np = np.linspace(np_min, np_min + 1e-6, 8)
+    nh_min, nh_max = float(nh_grid.min()), float(nh_grid.max())
+    if nh_max > nh_min:
+        levels_nh = np.linspace(nh_min, nh_max, 8)
+    else:
+        levels_nh = np.linspace(nh_min, nh_min + 1e-6, 8)
 
-    burnt_orange = "#CC5500"
+    nw_min, nw_max = float(nw_grid.min()), float(nw_grid.max())
+    if nw_max > nw_min:
+        levels_nw = np.linspace(nw_min, nw_max, 8)
+    else:
+        levels_nw = np.linspace(nw_min, nw_min + 1e-6, 8)
 
-    # HK contours (teal, dashed) so they are visually distinct
+    # HK contours (teal, dashed)
     ax.contour(
         X,
         Y,
@@ -546,19 +473,29 @@ def plot_density_contours(
         linestyles="dashed",
     )
 
-    # NumPyro contours (burnt orange)
-    if np_grid is not None and levels_np is not None:
-        ax.contour(
-            X,
-            Y,
-            np_grid,
-            levels=levels_np,
-            colors=burnt_orange,
-            linewidths=1.6,
-            linestyles="solid",
-        )
+    # Newton-H contours (blue)
+    ax.contour(
+        X,
+        Y,
+        nh_grid,
+        levels=levels_nh,
+        colors="royalblue",
+        linewidths=1.4,
+        linestyles="solid",
+    )
 
-    ax.set_title("Banana mixture: HK vs NumPyro")
+    # Newton-W contours (red)
+    ax.contour(
+        X,
+        Y,
+        nw_grid,
+        levels=levels_nw,
+        colors="crimson",
+        linewidths=1.4,
+        linestyles="solid",
+    )
+
+    ax.set_title("Banana mixture: HK vs Newton-H vs Newton-W")
     ax.set_xlabel("x1")
     ax.set_ylabel("x2")
 
@@ -588,7 +525,7 @@ def main():
     config = setup_config()
 
     print("=" * 80)
-    print("Metastability Experiment: Banana Mixture — HK vs NumPyro NUTS (no bootstrap)")
+    print("Metastability Experiment: Banana Mixture — HK vs Newton-H vs Newton-W")
     print("=" * 80)
 
     key = jr.PRNGKey(config["seed"])
@@ -615,9 +552,10 @@ def main():
     kernel = GaussianKernel(bandwidth=config["hk_kernel_bandwidth"])
     prior_particles = prior.to_particle_measure(hk_prior_key, config["n_particles"])
     initial_measure = ParticleMeasure.initialize(initial_atoms)
-    key, hk_key = jr.split(key)
+    key, hk_key, nh_key, nw_key = jr.split(key, 4)
+
     t0_hk = time.perf_counter()
-    final_measure, hk_snaps = run_hk_splitting(
+    final_hk_measure, hk_snaps = run_hk_splitting(
         hk_key,
         initial_measure,
         data,
@@ -629,15 +567,35 @@ def main():
     time_hk = time.perf_counter() - t0_hk
     print(f"  HK splitting elapsed: {time_hk:.2f} s")
 
-    # NumPyro NUTS (with timing)
-    numpyro_samples = jnp.zeros((0, 2))
-    time_numpyro = 0.0
-    if config.get("use_numpyro", True) and HAS_NUMPYRO:
-        print("Running NumPyro NUTS on banana mixture...")
-        numpyro_samples, time_numpyro = run_numpyro_nuts(config)
-        print(f"  NumPyro NUTS elapsed: {time_numpyro:.2f} s")
-    else:
-        print("NumPyro disabled or not available; skipping NUTS.")
+    # Newton-Hellinger (weights only, fixed atoms)
+    print("Running Newton-Hellinger flow (weights only)...")
+    nh_flow = make_newton_hellinger_flow_for_metastability(prior, kernel, config)
+    nh_measure = initial_measure
+    n_steps = config["n_steps"]
+    data_len = data.shape[0]
+    t0_nh = time.perf_counter()
+    for t in range(n_steps):
+        x = data[t % data_len]
+        nh_measure = nh_flow.step(nh_measure, x, key=None)
+    time_nh = time.perf_counter() - t0_nh
+    print(f"  Newton-Hellinger elapsed: {time_nh:.2f} s")
+
+    # Newton-Wasserstein (atoms only, fixed weights)
+    print("Running Newton-Wasserstein flow (atoms only)...")
+    nw_flow = make_newton_wasserstein_flow_for_metastability(
+        prior,
+        kernel,
+        prior_particles,
+        config,
+    )
+    nw_measure = initial_measure
+    keys_nw = jr.split(nw_key, n_steps)
+    t0_nw = time.perf_counter()
+    for t in range(n_steps):
+        x = data[t % data_len]
+        nw_measure = nw_flow.step(nw_measure, x, key=keys_nw[t])
+    time_nw = time.perf_counter() - t0_nw
+    print(f"  Newton-Wasserstein elapsed: {time_nw:.2f} s")
 
     # Mode occupancy (banana centers) for HK
     banana_centers = config["banana_centers"]
@@ -646,24 +604,16 @@ def main():
 
     # Plots: density comparison contours and HK mode occupancy
     print("Creating density comparison and occupancy plots...")
-    X_grid, Y_grid, hk_field, np_field = compute_hk_and_numpyro_densities(
+    X_grid, Y_grid, hk_field, nh_field, nw_field = compute_flow_densities(
         config,
-        final_measure,
-        numpyro_samples if numpyro_samples.size > 0 else None,
+        final_hk_measure,
+        nh_measure,
+        nw_measure,
         kernel,
     )
 
-    # Debug prints: inspect HK and NumPyro density fields and final HK measure
-    hk_min, hk_max = float(hk_field.min()), float(hk_field.max())
-    print(f"HK KDE density range on grid: min={hk_min:.3e}, max={hk_max:.3e}")
-    if np_field is not None:
-        np_min, np_max = float(np_field.min()), float(np_field.max())
-        print(f"NumPyro KDE density range on grid: min={np_min:.3e}, max={np_max:.3e}")
-    else:
-        print("NumPyro KDE not available (no samples).")
-
-    # Final HK weights summary
-    log_w = np.asarray(final_measure.log_weights)
+    # Final HK weights summary (for debugging)
+    log_w = np.asarray(final_hk_measure.log_weights)
     w_unnorm = np.exp(log_w - log_w.max())
     w = w_unnorm / w_unnorm.sum()
     print(
@@ -678,14 +628,16 @@ def main():
         X_grid,
         Y_grid,
         hk_field,
-        np_field,
+        nh_field,
+        nw_field,
     )
     plot_mode_occupancy(config, occ_hk)
 
     # Timing summary
     print("\n--- Elapsed times ---")
-    print(f"  HK splitting: {time_hk:.2f} s")
-    print(f"  NumPyro NUTS: {time_numpyro:.2f} s")
+    print(f"  HK splitting:       {time_hk:.2f} s")
+    print(f"  Newton-Hellinger:   {time_nh:.2f} s")
+    print(f"  Newton-Wasserstein: {time_nw:.2f} s")
     print("\nSaved figures 'metastability_density_comparison.png' and 'mode_occupancy_over_time.png'.")
 
 
