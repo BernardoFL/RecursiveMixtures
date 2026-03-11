@@ -172,19 +172,19 @@ def banana_mixture_score(
 def setup_config() -> Dict:
     """Configuration dictionary for the metastability experiment (dumbbell mixture)."""
     config = {
-        # Dumbbell-like Gaussian mixture: two main lobes plus a weak bridge
+        # Dumbbell-like Gaussian mixture: two main lobes plus a weak bridge (closer, larger variance)
         "dumbbell_means": jnp.array(
             [
-                [-3.0, 0.0],  # left lobe
-                [3.0, 0.0],   # right lobe
+                [-1.8, 0.0],  # left lobe
+                [1.8, 0.0],   # right lobe
                 [0.0, 0.0],   # bridge component
             ]
         ),
         "dumbbell_stds": jnp.array(
             [
-                [0.6, 0.6],
-                [0.6, 0.6],
-                [1.8, 0.3],  # elongated along x, narrow in y
+                [1.2, 1.2],
+                [1.2, 1.2],
+                [2.2, 0.6],  # elongated along x, narrow in y
             ]
         ),
         "dumbbell_weights": jnp.array([0.45, 0.45, 0.10]),
