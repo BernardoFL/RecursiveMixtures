@@ -272,6 +272,7 @@ def wasserstein_gradient(
     source: ParticleMeasure,
     target: ParticleMeasure,
     reg: float = 0.1,
+    num_iters: int = 50,
 ) -> Array:
     """
     Compute Wasserstein gradient for atom drift toward target.
@@ -302,7 +303,7 @@ def wasserstein_gradient(
     b = target.weights
     
     # Compute Sinkhorn potentials
-    f, g = compute_sinkhorn_potentials(a, b, M, reg)
+    f, g = compute_sinkhorn_potentials(a, b, M, reg, num_iters=num_iters)
     
     # The gradient of f with respect to x_i can be approximated
     # using the transport plan
@@ -571,10 +572,17 @@ def true_mixture_density(
     # Compute density for each component
     def component_density(mean, std):
         diff = x - mean  # (M, D)
-        # For 1D, std is scalar or (1,)
-        std_val = std[0] if std.ndim > 0 and len(std) == 1 else std
-        return jnp.exp(-0.5 * jnp.sum(diff ** 2, axis=1) / std_val ** 2) / \
-               (std_val * jnp.sqrt(2 * jnp.pi)) ** D
+        std_val = jnp.atleast_1d(std)
+        # Per-dimension variance: exponent = sum_d (x_d - mu_d)^2 / sigma_d^2
+        if std_val.shape == (1,) or (std_val.ndim == 1 and std_val.size == 1):
+            std_scalar = std_val.ravel()[0]
+            exponent = jnp.sum(diff ** 2, axis=1) / (std_scalar ** 2)
+            normalizer = (std_scalar * jnp.sqrt(2 * jnp.pi)) ** D
+        else:
+            # std_val shape (D,) for diagonal covariance
+            exponent = jnp.sum(diff ** 2 / (std_val ** 2), axis=1)  # (M,)
+            normalizer = jnp.prod(std_val * jnp.sqrt(2 * jnp.pi))
+        return jnp.exp(-0.5 * exponent) / normalizer
     
     densities = jnp.stack([
         component_density(means[k], stds[k] if stds.ndim > 0 else stds)
