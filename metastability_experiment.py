@@ -2,11 +2,11 @@
 """
 Mode Recovery and Metastability Experiment.
 
-This script compares the Hellinger–Kantorovich (HK) splitting scheme
-against NumPyro NUTS on a mixture of banana-shaped densities. Single
-long run per method (no bootstrap). Elapsed times are reported for
-both methods; trajectory and mode-occupancy plots show HK particle
-evolution and NUTS samples.
+This script compares the Hellinger–Kantorovich (HK) splitting scheme,
+Newton–Hellinger, and Newton flows on a dumbbell-like target: a weakly
+connected Gaussian mixture with two main lobes linked by a low-density
+bridge. Elapsed times are reported and density plots show how each flow
+approximates the target.
 """
 
 from __future__ import annotations
@@ -26,8 +26,10 @@ from recursive_mixtures import (
     ParticleMeasure,
     GaussianPrior,
     HellingerKantorovichFlow,
+    NewtonFlow,
 )
-from recursive_mixtures.flows import NewtonHellingerFlow, NewtonWassersteinFlow
+from recursive_mixtures.flows import NewtonHellingerFlow
+from recursive_mixtures.utils import generate_mixture_data, true_mixture_density
 
 
 # -----------------------------------------------------------------------------
@@ -168,20 +170,24 @@ def banana_mixture_score(
 
 
 def setup_config() -> Dict:
-    """Configuration dictionary for the metastability experiment (banana mixture)."""
+    """Configuration dictionary for the metastability experiment (dumbbell mixture)."""
     config = {
-        # Banana mixture: K components with (center, curvature, scale)
-        "banana_centers": jnp.array(
+        # Dumbbell-like Gaussian mixture: two main lobes plus a weak bridge
+        "dumbbell_means": jnp.array(
             [
-                [-3.0, 0.0],
-                [3.0, 0.0],
-                [0.0, -3.0],
-                [0.0, 3.0],
+                [-3.0, 0.0],  # left lobe
+                [3.0, 0.0],   # right lobe
+                [0.0, 0.0],   # bridge component
             ]
         ),
-        "banana_curvatures": jnp.array([0.08, -0.08, 0.08, -0.08]),
-        "banana_scales": jnp.array([[1.2, 0.8], [1.2, 0.8], [1.2, 0.8], [1.2, 0.8]]),
-        "banana_weights": jnp.array([0.25, 0.25, 0.25, 0.25]),
+        "dumbbell_stds": jnp.array(
+            [
+                [0.6, 0.6],
+                [0.6, 0.6],
+                [1.8, 0.3],  # elongated along x, narrow in y
+            ]
+        ),
+        "dumbbell_weights": jnp.array([0.45, 0.45, 0.10]),
         # Data
         "n_data": 1000,
         # Particles (match fast bootstrap settings)
@@ -212,16 +218,16 @@ def setup_config() -> Dict:
     return config
 
 
-def generate_banana_data(key: jax.Array, config: Dict) -> jax.Array:
-    """Generate 2D data from the banana mixture."""
-    return banana_mixture_sample(
+def generate_dumbbell_data(key: jax.Array, config: Dict) -> jax.Array:
+    """Generate 2D data from the dumbbell Gaussian mixture."""
+    samples, _ = generate_mixture_data(
         key,
         config["n_data"],
-        config["banana_centers"],
-        config["banana_curvatures"],
-        config["banana_scales"],
-        config["banana_weights"],
+        config["dumbbell_means"],
+        config["dumbbell_stds"],
+        config["dumbbell_weights"],
     )
+    return samples
 
 
 def make_hk_flow_for_metastability(
@@ -264,17 +270,12 @@ def make_newton_wasserstein_flow_for_metastability(
     kernel,
     prior_particles: ParticleMeasure,
     config: Dict,
-) -> NewtonWassersteinFlow:
-    """Configure a Newton-Wasserstein flow (atoms only, fixed weights)."""
-    return NewtonWassersteinFlow(
+) -> NewtonFlow:
+    """Configure a Newton flow (weights only, fixed atoms)."""
+    return NewtonFlow(
         kernel=kernel,
         prior=prior,
         step_size=config["hk_step_size"],
-        wasserstein_weight=config["hk_wasserstein_weight"],
-        sinkhorn_reg=config["hk_sinkhorn_reg"],
-        use_sinkhorn=True,
-        prior_particles=prior_particles,
-        sinkhorn_num_iters=config.get("hk_sinkhorn_num_iters", 30),
     )
 
 
@@ -367,20 +368,19 @@ def mode_occupancy(
 
 
 def build_density_background(config: Dict) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Precompute banana mixture density on a grid for background plotting."""
+    """Precompute dumbbell mixture density on a grid for background plotting."""
     n = config["grid_size"]
     xs = jnp.linspace(config["grid_min"], config["grid_max"], n)
     ys = jnp.linspace(config["grid_min"], config["grid_max"], n)
     X, Y = jnp.meshgrid(xs, ys)
     grid_points = jnp.stack([X.ravel(), Y.ravel()], axis=1)
-    log_dens = banana_mixture_log_density(
+
+    dens = true_mixture_density(
         grid_points,
-        config["banana_centers"],
-        config["banana_curvatures"],
-        config["banana_scales"],
-        config["banana_weights"],
+        config["dumbbell_means"],
+        config["dumbbell_stds"],
+        config["dumbbell_weights"],
     )
-    dens = jnp.exp(log_dens)
     return (
         np.asarray(X),
         np.asarray(Y),
@@ -530,10 +530,10 @@ def main():
 
     key = jr.PRNGKey(config["seed"])
 
-    # Generate banana mixture data
+    # Generate dumbbell mixture data
     key, data_key = jr.split(key)
-    data = generate_banana_data(data_key, config)
-    print(f"Generated {config['n_data']} observations from banana mixture.")
+    data = generate_dumbbell_data(data_key, config)
+    print(f"Generated {config['n_data']} observations from dumbbell mixture.")
 
     # Background density for visualization (true density grid)
     Xg, Yg, true_grid = build_density_background(config)
@@ -580,8 +580,8 @@ def main():
     time_nh = time.perf_counter() - t0_nh
     print(f"  Newton-Hellinger elapsed: {time_nh:.2f} s")
 
-    # Newton-Wasserstein (atoms only, fixed weights)
-    print("Running Newton-Wasserstein flow (atoms only)...")
+    # Newton flow (recursive weights-only update with fixed atoms)
+    print("Running Newton flow (weights only)...")
     nw_flow = make_newton_wasserstein_flow_for_metastability(
         prior,
         kernel,
@@ -589,18 +589,17 @@ def main():
         config,
     )
     nw_measure = initial_measure
-    keys_nw = jr.split(nw_key, n_steps)
     t0_nw = time.perf_counter()
     for t in range(n_steps):
         x = data[t % data_len]
-        nw_measure = nw_flow.step(nw_measure, x, key=keys_nw[t])
+        nw_measure = nw_flow.step(nw_measure, x, key=None)
     time_nw = time.perf_counter() - t0_nw
-    print(f"  Newton-Wasserstein elapsed: {time_nw:.2f} s")
+    print(f"  Newton flow elapsed: {time_nw:.2f} s")
 
-    # Mode occupancy (banana centers) for HK
-    banana_centers = config["banana_centers"]
+    # Mode occupancy (dumbbell means) for HK
+    dumbbell_means = config["dumbbell_means"]
     print("Computing mode occupancy over time (HK)...")
-    occ_hk = mode_occupancy(hk_snaps, banana_centers)
+    occ_hk = mode_occupancy(hk_snaps, dumbbell_means)
 
     # Plots: density comparison contours and HK mode occupancy
     print("Creating density comparison and occupancy plots...")
@@ -635,9 +634,9 @@ def main():
 
     # Timing summary
     print("\n--- Elapsed times ---")
-    print(f"  HK splitting:       {time_hk:.2f} s")
-    print(f"  Newton-Hellinger:   {time_nh:.2f} s")
-    print(f"  Newton-Wasserstein: {time_nw:.2f} s")
+    print(f"  HK splitting:     {time_hk:.2f} s")
+    print(f"  Newton-Hellinger: {time_nh:.2f} s")
+    print(f"  Newton flow:      {time_nw:.2f} s")
     print("\nSaved figures 'metastability_density_comparison.png' and 'mode_occupancy_over_time.png'.")
 
 
