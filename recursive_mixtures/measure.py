@@ -340,6 +340,69 @@ class GaussianPrior(Prior):
         return ParticleMeasure.initialize(atoms)
 
 
+class DirichletProcessPrior(Prior):
+    """
+    Dirichlet-process prior centered at a base prior G0.
+
+    We sample atoms using the Pólya-urn predictive scheme:
+    - with probability α / (α + i), draw a new atom from G0
+    - otherwise, copy one of the previous atoms uniformly.
+
+    This yields samples from the DP-marginal predictive law and introduces
+    repeated atoms (clustering) characteristic of a DP draw.
+    """
+
+    def __init__(self, base_prior: Prior, concentration: float = 1.0):
+        """
+        Initialize DP prior.
+
+        Args:
+            base_prior: Centering/base distribution G0.
+            concentration: DP concentration parameter α (> 0).
+        """
+        if concentration <= 0:
+            raise ValueError("concentration must be positive")
+        self.base_prior = base_prior
+        self.concentration = float(concentration)
+
+    def sample(self, key: Array, n: int) -> Array:
+        """Sample n points from a DP-marginal sequence."""
+        if n <= 0:
+            raise ValueError("n must be positive")
+
+        atoms: list[Array] = []
+        for i in range(n):
+            if i == 0:
+                key, base_key = jr.split(key)
+                atoms.append(self.base_prior.sample(base_key, 1)[0])
+                continue
+
+            key, decision_key, idx_key, base_key = jr.split(key, 4)
+            p_new = self.concentration / (self.concentration + i)
+            if bool(jr.uniform(decision_key) < p_new):
+                atoms.append(self.base_prior.sample(base_key, 1)[0])
+            else:
+                idx = int(jr.randint(idx_key, shape=(), minval=0, maxval=i))
+                atoms.append(atoms[idx])
+
+        return jnp.stack(atoms, axis=0)
+
+    def log_prob(self, x: Array) -> Array:
+        """
+        Approximate log density using the base prior's log density.
+
+        A random DP draw is almost surely discrete and does not admit a smooth
+        Lebesgue density, so this proxy is used where a continuous log-prob is
+        needed in existing code paths.
+        """
+        return self.base_prior.log_prob(x)
+
+    def to_particle_measure(self, key: Array, n_particles: int) -> ParticleMeasure:
+        """Create a ParticleMeasure from DP-marginal samples."""
+        atoms = self.sample(key, n_particles)
+        return ParticleMeasure.initialize(atoms)
+
+
 class MixturePrior(Prior):
     """
     Mixture of prior distributions.

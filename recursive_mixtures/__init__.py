@@ -7,10 +7,17 @@ Repulsive (MMD), and Covariate-Dependent flows.
 """
 
 from recursive_mixtures.kernels import Kernel, GaussianKernel, MaternKernel
-from recursive_mixtures.measure import ParticleMeasure, Prior, GaussianPrior, MixturePrior
+from recursive_mixtures.measure import (
+    ParticleMeasure,
+    Prior,
+    GaussianPrior,
+    DirichletProcessPrior,
+    MixturePrior,
+)
 from recursive_mixtures.functionals import Functional, LogLikelihoodFunctional, KLFunctional, MMDFunctional
 from recursive_mixtures.flows import (
     GradientFlow,
+    NewtonFlow,
     NewtonHellingerFlow,
     HellingerKantorovichFlow,
     RepulsiveFlow,
@@ -29,6 +36,7 @@ __all__ = [
     "ParticleMeasure",
     "Prior",
     "GaussianPrior",
+    "DirichletProcessPrior",
     "MixturePrior",
     # Functionals
     "Functional",
@@ -37,6 +45,7 @@ __all__ = [
     "MMDFunctional",
     # Flows
     "GradientFlow",
+    "NewtonFlow",
     "NewtonHellingerFlow",
     "HellingerKantorovichFlow",
     "RepulsiveFlow",

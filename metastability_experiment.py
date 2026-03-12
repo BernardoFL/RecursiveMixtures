@@ -26,6 +26,7 @@ from recursive_mixtures import (
     GaussianKernel,
     ParticleMeasure,
     GaussianPrior,
+    DirichletProcessPrior,
     HellingerKantorovichFlow,
     NewtonFlow,
 )
@@ -206,6 +207,7 @@ def setup_config() -> Dict:
         # Prior for HK flow
         "prior_mean": jnp.array([0.0, 0.0]),
         "prior_std": 8.0,
+        "dp_concentration": 10.0,
         # Trajectory recording: single long run (shorter, faster run)
         "n_steps": 100,
         "record_every": 20,
@@ -551,10 +553,14 @@ def main(n_steps: int | None = None):
     Xg, Yg, true_grid = build_density_background(config)
 
     # Initial particles from prior
-    prior = GaussianPrior(
+    base_prior = GaussianPrior(
         mean=config["prior_mean"],
         std=config["prior_std"],
         dim=2,
+    )
+    prior = DirichletProcessPrior(
+        base_prior=base_prior,
+        concentration=config["dp_concentration"],
     )
     key, init_key, hk_prior_key = jr.split(key, 3)
     initial_atoms = prior.sample(init_key, config["n_particles"])
