@@ -414,6 +414,7 @@ class HellingerKantorovichFlow(GradientFlow):
         prior_flow_weight: float = 0.0,
         prior_mc_samples: int = 1,
         sinkhorn_num_iters: int = 30,
+        atom_noise_std: float = 0.05,
     ):
         """
         Initialize Hellinger-Kantorovich flow.
@@ -429,6 +430,8 @@ class HellingerKantorovichFlow(GradientFlow):
             prior_flow_weight: Weight λ for Sinkhorn prior force in Hellinger step
             prior_mc_samples: Number M of Monte Carlo prior measures per step
             sinkhorn_num_iters: Sinkhorn iterations per OT solve (fewer = faster)
+            atom_noise_std: Standard deviation multiplier for Gaussian noise
+                added to atom updates at each step.
         """
         super().__init__(kernel, prior, step_size)
         self.likelihood_functional = LogLikelihoodFunctional(kernel)
@@ -439,6 +442,7 @@ class HellingerKantorovichFlow(GradientFlow):
         self.prior_flow_weight = prior_flow_weight
         self.prior_mc_samples = prior_mc_samples
         self.sinkhorn_num_iters = sinkhorn_num_iters
+        self.atom_noise_std = atom_noise_std
     
     def _get_prior_particles(
         self,
@@ -517,6 +521,17 @@ class HellingerKantorovichFlow(GradientFlow):
             reg=self.sinkhorn_reg,
             num_iters=self.sinkhorn_num_iters,
         )
+
+    def _add_atom_noise(self, atoms: Array, key: Optional[Array]) -> Array:
+        """Add Gaussian noise to atom updates when enabled."""
+        if self.atom_noise_std <= 0:
+            return atoms
+        if key is None:
+            raise ValueError(
+                "Atom noise is enabled (atom_noise_std > 0), but no PRNG key was provided."
+            )
+        noise = jr.normal(key, shape=atoms.shape)
+        return atoms + self.step_size * self.atom_noise_std * noise
     
     def step(
         self,
@@ -545,21 +560,40 @@ class HellingerKantorovichFlow(GradientFlow):
         
         # Optional prior force via Sinkhorn dual potentials
         V = g
-        sinkhorn_key = key
-        
-        if self.prior_flow_weight != 0.0 and self.prior_mc_samples > 0:
-            if key is None:
-                raise ValueError(
-                    "HellingerKantorovichFlow requires a PRNG key when "
-                    "prior_flow_weight > 0 to sample prior measures."
-                )
-            
-            # Split key into MC prior keys and (optionally) a key for atom Sinkhorn drift
-            n_splits = self.prior_mc_samples + (1 if self.use_sinkhorn else 0)
-            keys = jr.split(key, n_splits)
-            mc_keys = keys[: self.prior_mc_samples]
-            sinkhorn_key = keys[-1] if self.use_sinkhorn else None
-            
+        sinkhorn_key = None
+        noise_key = None
+        mc_keys = []
+        need_mc = self.prior_flow_weight != 0.0 and self.prior_mc_samples > 0
+
+        if need_mc and key is None:
+            raise ValueError(
+                "HellingerKantorovichFlow requires a PRNG key when "
+                "prior_flow_weight > 0 to sample prior measures."
+            )
+        if self.atom_noise_std > 0 and key is None:
+            raise ValueError(
+                "HellingerKantorovichFlow requires a PRNG key when atom_noise_std > 0."
+            )
+
+        if key is not None:
+            n_splits = (
+                (self.prior_mc_samples if need_mc else 0)
+                + (1 if self.use_sinkhorn else 0)
+                + (1 if self.atom_noise_std > 0 else 0)
+            )
+            if n_splits > 0:
+                keys = jr.split(key, n_splits)
+                idx = 0
+                if need_mc:
+                    mc_keys = keys[idx : idx + self.prior_mc_samples]
+                    idx += self.prior_mc_samples
+                if self.use_sinkhorn:
+                    sinkhorn_key = keys[idx]
+                    idx += 1
+                if self.atom_noise_std > 0:
+                    noise_key = keys[idx]
+
+        if need_mc:
             prior_measures = [
                 self.prior.to_particle_measure(k, measure.n_particles)
                 for k in mc_keys
@@ -590,6 +624,7 @@ class HellingerKantorovichFlow(GradientFlow):
             velocity = velocity + self.sinkhorn_reg * sinkhorn_drift
         
         new_atoms = measure.atoms + self.step_size * self.wasserstein_weight * velocity
+        new_atoms = self._add_atom_noise(new_atoms, noise_key)
         
         return ParticleMeasure(
             atoms=new_atoms,
@@ -617,6 +652,7 @@ class NewtonWassersteinFlow(HellingerKantorovichFlow):
         use_sinkhorn: bool = True,
         prior_particles: Optional[ParticleMeasure] = None,
         sinkhorn_num_iters: int = 30,
+        atom_noise_std: float = 0.05,
     ):
         """
         Initialize Newton-Wasserstein flow.
@@ -630,6 +666,7 @@ class NewtonWassersteinFlow(HellingerKantorovichFlow):
             use_sinkhorn: Whether to add Sinkhorn regularization drift
             prior_particles: Particle representation of prior (used for drift)
             sinkhorn_num_iters: Sinkhorn iterations per OT solve (fewer = faster)
+            atom_noise_std: Standard deviation multiplier for Gaussian atom noise.
         """
         # We reuse HellingerKantorovichFlow's infrastructure for velocity + drift,
         # but disable any Hellinger prior force by setting prior_flow_weight=0
@@ -645,6 +682,7 @@ class NewtonWassersteinFlow(HellingerKantorovichFlow):
             prior_flow_weight=0.0,
             prior_mc_samples=0,
             sinkhorn_num_iters=sinkhorn_num_iters,
+            atom_noise_std=atom_noise_std,
         )
 
     def step(
@@ -671,16 +709,28 @@ class NewtonWassersteinFlow(HellingerKantorovichFlow):
         # Wasserstein velocity from the kernel gradient
         velocity = self._compute_velocity(measure, data)
 
+        sinkhorn_key = key
+        noise_key = None
+        if self.atom_noise_std > 0 and key is None:
+            raise ValueError(
+                "NewtonWassersteinFlow requires a PRNG key when atom_noise_std > 0."
+            )
+        if key is not None and self.use_sinkhorn and self.atom_noise_std > 0:
+            sinkhorn_key, noise_key = jr.split(key)
+        elif key is not None and self.atom_noise_std > 0:
+            noise_key = key
+
         # Optional Sinkhorn regularization drift toward the prior
-        if self.use_sinkhorn and key is not None:
+        if self.use_sinkhorn and sinkhorn_key is not None:
             prior_measure = self._get_prior_particles(
-                key,
+                sinkhorn_key,
                 measure.n_particles,
             )
             sinkhorn_drift = self._compute_sinkhorn_drift(measure, prior_measure)
             velocity = velocity + self.sinkhorn_reg * sinkhorn_drift
 
         new_atoms = measure.atoms + self.step_size * self.wasserstein_weight * velocity
+        new_atoms = self._add_atom_noise(new_atoms, noise_key)
 
         # Keep log_weights unchanged; normalize for numerical stability only
         return ParticleMeasure(
@@ -714,6 +764,7 @@ class RepulsiveFlow(HellingerKantorovichFlow):
         repulsion_weight: float = 0.1,
         repulsion_kernel: Optional[Kernel] = None,
         prior_particles: Optional[ParticleMeasure] = None,
+        atom_noise_std: float = 0.05,
     ):
         """
         Initialize Repulsive flow.
@@ -728,10 +779,12 @@ class RepulsiveFlow(HellingerKantorovichFlow):
             repulsion_weight: Weight λ_rep for repulsive term
             repulsion_kernel: Kernel for MMD (default: same as likelihood)
             prior_particles: Particle representation of prior
+            atom_noise_std: Standard deviation multiplier for Gaussian atom noise.
         """
         super().__init__(
             kernel, prior, step_size, wasserstein_weight,
-            sinkhorn_reg, use_sinkhorn, prior_particles
+            sinkhorn_reg, use_sinkhorn, prior_particles,
+            atom_noise_std=atom_noise_std,
         )
         self.repulsion_weight = repulsion_weight
         self.repulsion_kernel = repulsion_kernel or kernel
@@ -816,16 +869,24 @@ class RepulsiveFlow(HellingerKantorovichFlow):
         # Step 2: Wasserstein (atom) update with repulsion
         velocity = self._compute_velocity(measure, data)
         
-        # Get prior particles
+        # Get prior particles and noise key
+        noise_key = None
         if key is not None:
-            key1, key2 = jr.split(key)
-            prior_measure = self._get_prior_particles(key1, measure.n_particles)
+            if self.atom_noise_std > 0:
+                prior_key, noise_key = jr.split(key)
+            else:
+                prior_key = key
+            prior_measure = self._get_prior_particles(prior_key, measure.n_particles)
         else:
             # Use cached or create deterministically
             prior_measure = self._prior_particles
             if prior_measure is None:
                 prior_measure = ParticleMeasure.initialize(
                     self.prior.sample(jr.PRNGKey(0), measure.n_particles)
+                )
+            if self.atom_noise_std > 0:
+                raise ValueError(
+                    "RepulsiveFlow requires a PRNG key when atom_noise_std > 0."
                 )
         
         # Add Sinkhorn drift
@@ -838,6 +899,7 @@ class RepulsiveFlow(HellingerKantorovichFlow):
         velocity = velocity + repulsive_drift
         
         new_atoms = measure.atoms + self.step_size * self.wasserstein_weight * velocity
+        new_atoms = self._add_atom_noise(new_atoms, noise_key)
         
         return ParticleMeasure(
             atoms=new_atoms,
