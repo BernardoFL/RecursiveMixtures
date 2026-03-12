@@ -83,6 +83,8 @@ class GradientFlow(ABC):
         data_stream: Array,
         key: Optional[Array] = None,
         store_every: int = 1,
+        n_steps: Optional[int] = None,
+        bootstrap_after_data: bool = False,
     ) -> Tuple[ParticleMeasure, list[ParticleMeasure]]:
         """
         Run gradient flow on a stream of data.
@@ -92,6 +94,11 @@ class GradientFlow(ABC):
             data_stream: Data points, shape (T, D) or (T,) for 1D
             key: JAX random key
             store_every: Store history every N steps
+            n_steps: Total number of flow steps to run. If None, runs once
+                over the provided data stream.
+            bootstrap_after_data: If True and n_steps exceeds data size n,
+                steps t >= n sample indices uniformly with replacement from
+                the original data stream.
             
         Returns:
             Tuple of (final_measure, history)
@@ -101,14 +108,37 @@ class GradientFlow(ABC):
             # Handle 1D data passed as (1, T) instead of (T, 1)
             data_stream = data_stream.T
         
+        n_data = int(data_stream.shape[0])
+        total_steps = n_data if n_steps is None else int(n_steps)
+        if total_steps < 0:
+            raise ValueError("n_steps must be non-negative")
+        if total_steps > n_data and not bootstrap_after_data:
+            raise ValueError(
+                "n_steps exceeds data size but bootstrap_after_data is False"
+            )
+
         history = [measure]
         
-        if key is not None:
-            keys = jr.split(key, len(data_stream))
-        else:
-            keys = [None] * len(data_stream)
-        
-        for t, (data_point, subkey) in enumerate(zip(data_stream, keys)):
+        for t in range(total_steps):
+            if t < n_data:
+                data_idx = t
+            elif key is not None:
+                key, idx_key, subkey = jr.split(key, 3)
+                data_idx = jr.randint(idx_key, shape=(), minval=0, maxval=n_data)
+                data_point = data_stream[data_idx]
+                measure = self.step(measure, data_point, subkey)
+                if (t + 1) % store_every == 0:
+                    history.append(measure)
+                continue
+            else:
+                # Deterministic fallback without a PRNG key.
+                data_idx = t % n_data
+
+            if key is not None:
+                key, subkey = jr.split(key)
+            else:
+                subkey = None
+            data_point = data_stream[data_idx]
             measure = self.step(measure, data_point, subkey)
             
             if (t + 1) % store_every == 0:
@@ -311,23 +341,44 @@ class NewtonFlow(GradientFlow):
         data_stream: Array,
         key: Optional[Array] = None,
         store_every: int = 1,
+        n_steps: Optional[int] = None,
+        bootstrap_after_data: bool = False,
     ) -> Tuple[ParticleMeasure, list[ParticleMeasure]]:
         """
         Run Newton flow on a stream of data with schedule (α_n).
 
         This mirrors GradientFlow.run but uses α_n determined by
-        alpha_seq / alpha_fn / step_size for each step n.
+        alpha_seq / alpha_fn / step_size for each step n. If n_steps exceeds
+        data size and bootstrap_after_data=True, extra steps sample points
+        uniformly with replacement from the original data stream.
         """
-        del key  # Deterministic; no randomness needed
-
         data_stream = jnp.atleast_2d(data_stream)
         if data_stream.shape[0] == 1 and data_stream.shape[1] > 1:
             # Handle 1D data passed as (1, T) instead of (T, 1)
             data_stream = data_stream.T
 
+        n_data = int(data_stream.shape[0])
+        total_steps = n_data if n_steps is None else int(n_steps)
+        if total_steps < 0:
+            raise ValueError("n_steps must be non-negative")
+        if total_steps > n_data and not bootstrap_after_data:
+            raise ValueError(
+                "n_steps exceeds data size but bootstrap_after_data is False"
+            )
+
         history: list[ParticleMeasure] = [measure]
 
-        for t, data_point in enumerate(data_stream):
+        for t in range(total_steps):
+            if t < n_data:
+                data_idx = t
+            elif key is not None:
+                key, idx_key = jr.split(key)
+                data_idx = jr.randint(idx_key, shape=(), minval=0, maxval=n_data)
+            else:
+                # Deterministic fallback without a PRNG key.
+                data_idx = t % n_data
+
+            data_point = data_stream[data_idx]
             alpha_t = self._get_alpha(t)
             measure = self._newton_update(measure, data_point, alpha_t)
 
@@ -952,6 +1003,8 @@ class CovariateDependentFlow(GradientFlow):
         Z: Array,
         key: Optional[Array] = None,
         store_every: int = 1,
+        n_steps: Optional[int] = None,
+        bootstrap_after_data: bool = False,
     ) -> Tuple[ParticleMeasure, list[ParticleMeasure]]:
         """
         Run flow on regression data (X responses, Z covariates).
@@ -962,6 +1015,11 @@ class CovariateDependentFlow(GradientFlow):
             Z: Covariates, shape (T, D_z)
             key: JAX random key
             store_every: Store history every N steps
+            n_steps: Total number of flow steps to run. If None, runs once
+                over the provided paired (X, Z) stream.
+            bootstrap_after_data: If True and n_steps exceeds dataset size n,
+                steps t >= n sample paired (X_i, Z_i) uniformly with
+                replacement from the original data.
             
         Returns:
             Tuple of (final_measure, history)
@@ -972,14 +1030,37 @@ class CovariateDependentFlow(GradientFlow):
         if X.ndim == 1:
             X = X[:, None]
         
+        n_data = int(X.shape[0])
+        total_steps = n_data if n_steps is None else int(n_steps)
+        if total_steps < 0:
+            raise ValueError("n_steps must be non-negative")
+        if total_steps > n_data and not bootstrap_after_data:
+            raise ValueError(
+                "n_steps exceeds data size but bootstrap_after_data is False"
+            )
+
         history = [measure]
         
-        if key is not None:
-            keys = jr.split(key, len(X))
-        else:
-            keys = [None] * len(X)
-        
-        for t, (x, z, subkey) in enumerate(zip(X, Z, keys)):
+        for t in range(total_steps):
+            if t < n_data:
+                data_idx = t
+            elif key is not None:
+                key, idx_key, subkey = jr.split(key, 3)
+                data_idx = jr.randint(idx_key, shape=(), minval=0, maxval=n_data)
+                x, z = X[data_idx], Z[data_idx]
+                measure = self.step(measure, (x, z), subkey)
+                if (t + 1) % store_every == 0:
+                    history.append(measure)
+                continue
+            else:
+                # Deterministic fallback without a PRNG key.
+                data_idx = t % n_data
+
+            if key is not None:
+                key, subkey = jr.split(key)
+            else:
+                subkey = None
+            x, z = X[data_idx], Z[data_idx]
             measure = self.step(measure, (x, z), subkey)
             
             if (t + 1) % store_every == 0:
