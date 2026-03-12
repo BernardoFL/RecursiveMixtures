@@ -302,16 +302,23 @@ def run_hk_splitting(
 
     n_steps = config["n_steps"]
     record_every = config["record_every"]
+    data_len = int(data_stream.shape[0])
 
-    # For simplicity, cycle through the data stream
-    data_len = data_stream.shape[0]
+    # First pass uses each point in order; beyond n, sample with replacement.
+    if n_steps <= data_len:
+        step_indices = jnp.arange(n_steps)
+    else:
+        n_extra = n_steps - data_len
+        key, idx_key = jr.split(key)
+        extra_idx = jr.randint(idx_key, shape=(n_extra,), minval=0, maxval=data_len)
+        step_indices = jnp.concatenate([jnp.arange(data_len), extra_idx], axis=0)
     keys = jr.split(key, n_steps)
 
     # Simple text progress bar for HK splitting
     bar_width = 30
 
     for t in range(n_steps):
-        x = data_stream[t % data_len]
+        x = data_stream[step_indices[t]]
         measure = flow.step(measure, x, keys[t])
         if (t + 1) % record_every == 0:
             traj_snapshots.append(measure.atoms)
@@ -577,10 +584,18 @@ def main(n_steps: int | None = None):
     nh_flow = make_newton_hellinger_flow_for_metastability(prior, kernel, config)
     nh_measure = initial_measure
     n_steps = config["n_steps"]
-    data_len = data.shape[0]
+    data_len = int(data.shape[0])
+    # Same data-index policy: first pass in order, then bootstrap with replacement.
+    if n_steps <= data_len:
+        step_indices = jnp.arange(n_steps)
+    else:
+        n_extra = n_steps - data_len
+        nh_key, nh_idx_key = jr.split(nh_key)
+        nh_extra_idx = jr.randint(nh_idx_key, shape=(n_extra,), minval=0, maxval=data_len)
+        step_indices = jnp.concatenate([jnp.arange(data_len), nh_extra_idx], axis=0)
     t0_nh = time.perf_counter()
     for t in range(n_steps):
-        x = data[t % data_len]
+        x = data[step_indices[t]]
         nh_measure = nh_flow.step(nh_measure, x, key=None)
     time_nh = time.perf_counter() - t0_nh
     print(f"  Newton-Hellinger elapsed: {time_nh:.2f} s")
@@ -594,12 +609,34 @@ def main(n_steps: int | None = None):
         config,
     )
     nw_measure = initial_measure
+    if n_steps <= data_len:
+        step_indices_nw = jnp.arange(n_steps)
+    else:
+        n_extra = n_steps - data_len
+        nw_key, nw_idx_key = jr.split(nw_key)
+        nw_extra_idx = jr.randint(nw_idx_key, shape=(n_extra,), minval=0, maxval=data_len)
+        step_indices_nw = jnp.concatenate([jnp.arange(data_len), nw_extra_idx], axis=0)
     t0_nw = time.perf_counter()
     for t in range(n_steps):
-        x = data[t % data_len]
+        x = data[step_indices_nw[t]]
         nw_measure = nw_flow.step(nw_measure, x, key=None)
     time_nw = time.perf_counter() - t0_nw
     print(f"  Newton flow elapsed: {time_nw:.2f} s")
+
+    # Atom movement diagnostics: confirms whether particles physically moved.
+    init_atoms_np = np.asarray(initial_measure.atoms)
+    hk_atoms_np = np.asarray(final_hk_measure.atoms)
+    nh_atoms_np = np.asarray(nh_measure.atoms)
+    nw_atoms_np = np.asarray(nw_measure.atoms)
+    hk_disp = np.linalg.norm(hk_atoms_np - init_atoms_np, axis=1)
+    nh_disp = np.linalg.norm(nh_atoms_np - init_atoms_np, axis=1)
+    nw_disp = np.linalg.norm(nw_atoms_np - init_atoms_np, axis=1)
+    print(
+        "Atom displacement (mean / max): "
+        f"HK={hk_disp.mean():.4f}/{hk_disp.max():.4f}, "
+        f"Newton-H={nh_disp.mean():.4f}/{nh_disp.max():.4f}, "
+        f"NewtonFlow={nw_disp.mean():.4f}/{nw_disp.max():.4f}"
+    )
 
     # Mode occupancy (dumbbell means) for HK
     dumbbell_means = config["dumbbell_means"]
