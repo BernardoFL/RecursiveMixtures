@@ -11,6 +11,7 @@ approximates the target.
 
 from __future__ import annotations
 
+import argparse
 import sys
 import time
 from typing import Dict, List, Tuple
@@ -521,8 +522,12 @@ def plot_mode_occupancy(config: Dict, occ_hk: np.ndarray):
     plt.close(fig)
 
 
-def main():
+def main(n_steps: int | None = None):
     config = setup_config()
+    if n_steps is not None:
+        if n_steps <= 0:
+            raise ValueError("--n-steps must be positive")
+        config["n_steps"] = int(n_steps)
 
     print("=" * 80)
     print("Metastability Experiment: Banana Mixture — HK vs Newton-H vs Newton-W")
@@ -647,5 +652,14 @@ if __name__ == "__main__":
     except Exception:
         pass
 
-    main()
+    parser = argparse.ArgumentParser(description="Metastability flow comparison experiment")
+    parser.add_argument(
+        "--n-steps",
+        type=int,
+        default=None,
+        help="Override number of flow steps (default uses config value).",
+    )
+    args = parser.parse_args()
+
+    main(n_steps=args.n_steps)
 

@@ -11,6 +11,7 @@ baseline.
 
 from __future__ import annotations
 
+import argparse
 from typing import Dict, List, Tuple
 import time
 
@@ -76,6 +77,9 @@ def setup_config(fast: bool = True) -> Dict:
         "store_every": 0,  # only final measures for bootstrap
         # Random seeds
         "seed": 123,
+        # Optional override from CLI. If set and > n_data, flow.run uses
+        # bootstrap continuation beyond data length.
+        "n_steps": None,
     }
     return config
 
@@ -202,19 +206,27 @@ def run_single_hk_replicate(
     flow = make_hk_flow(prior, kernel, prior_particles, config)
 
     # Use the built-in run method, which handles key splitting internally
+    n_steps = config.get("n_steps")
+    bootstrap_after_data = bool(n_steps is not None and n_steps > int(data_boot.shape[0]))
+    total_steps = int(n_steps) if n_steps is not None else int(data_boot.shape[0])
+
     if config["store_every"] and config["store_every"] > 0:
         final_measure, _ = flow.run(
             initial_measure,
             data_boot,
             key=key_flow,
             store_every=config["store_every"],
+            n_steps=n_steps,
+            bootstrap_after_data=bootstrap_after_data,
         )
     else:
         final_measure, _ = flow.run(
             initial_measure,
             data_boot,
             key=key_flow,
-            store_every=len(data_boot),  # only store final state
+            store_every=total_steps,  # only store final state
+            n_steps=n_steps,
+            bootstrap_after_data=bootstrap_after_data,
         )
     return final_measure
 
@@ -232,8 +244,8 @@ def run_single_newton_h_replicate(
     n_data = data.shape[0]
     n_particles = config["n_particles"]
 
-    # Split keys for bootstrap weights, resampling, prior initialization
-    key_boot, key_resample, key_init = jr.split(key, 3)
+    # Split keys for bootstrap weights, resampling, prior initialization, and flow
+    key_boot, key_resample, key_init, key_flow = jr.split(key, 4)
 
     # Bayesian bootstrap weights and resampling indices
     weights_boot = bayesian_bootstrap(key_boot, n_data)
@@ -253,19 +265,27 @@ def run_single_newton_h_replicate(
     flow = make_newton_hellinger_flow(prior, kernel, config)
 
     # Deterministic flow, no key needed
+    n_steps = config.get("n_steps")
+    bootstrap_after_data = bool(n_steps is not None and n_steps > int(data_boot.shape[0]))
+    total_steps = int(n_steps) if n_steps is not None else int(data_boot.shape[0])
+
     if config["store_every"] and config["store_every"] > 0:
         final_measure, _ = flow.run(
             initial_measure,
             data_boot,
-            key=None,
+            key=key_flow,
             store_every=config["store_every"],
+            n_steps=n_steps,
+            bootstrap_after_data=bootstrap_after_data,
         )
     else:
         final_measure, _ = flow.run(
             initial_measure,
             data_boot,
-            key=None,
-            store_every=len(data_boot),
+            key=key_flow,
+            store_every=total_steps,
+            n_steps=n_steps,
+            bootstrap_after_data=bootstrap_after_data,
         )
     return final_measure
 
@@ -303,19 +323,27 @@ def run_single_newton_w_replicate(
 
     flow = make_newton_wasserstein_flow(prior, kernel, prior_particles, config)
 
+    n_steps = config.get("n_steps")
+    bootstrap_after_data = bool(n_steps is not None and n_steps > int(data_boot.shape[0]))
+    total_steps = int(n_steps) if n_steps is not None else int(data_boot.shape[0])
+
     if config["store_every"] and config["store_every"] > 0:
         final_measure, _ = flow.run(
             initial_measure,
             data_boot,
             key=key_flow,
             store_every=config["store_every"],
+            n_steps=n_steps,
+            bootstrap_after_data=bootstrap_after_data,
         )
     else:
         final_measure, _ = flow.run(
             initial_measure,
             data_boot,
             key=key_flow,
-            store_every=len(data_boot),
+            store_every=total_steps,
+            n_steps=n_steps,
+            bootstrap_after_data=bootstrap_after_data,
         )
     return final_measure
 
@@ -565,9 +593,13 @@ def plot_bootstrap_results(
     plt.close(fig)
 
 
-def main(fast: bool = True):
+def main(fast: bool = True, n_steps: int | None = None):
     """Run bootstrap experiment. Use fast=False for full runs (more data, B, MCMC)."""
     config = setup_config(fast=fast)
+    if n_steps is not None:
+        if n_steps <= 0:
+            raise ValueError("--n-steps must be positive")
+        config["n_steps"] = int(n_steps)
 
     print("=" * 80)
     print("Bootstrap HK Flow Experiment (Bivariate Mixture)")
@@ -575,6 +607,8 @@ def main(fast: bool = True):
         print("(Fast mode: n_data=%d, B=%d, prior_mc_samples=%d, sinkhorn_num_iters=%d, MCMC off)"
               % (config["n_data"], config["n_bootstrap"], config["prior_mc_samples"],
                  config.get("sinkhorn_num_iters", 30)))
+    if config.get("n_steps") is not None:
+        print(f"(Flow run override: n_steps={config['n_steps']})")
     print("=" * 80)
 
     key = jr.PRNGKey(config["seed"])
@@ -682,13 +716,26 @@ def main(fast: bool = True):
 
 
 if __name__ == "__main__":
-    import sys
     # Enable 64-bit precision for numerical stability if available
     try:
         jax.config.update("jax_enable_x64", True)
     except Exception:
         pass
-    # Use fast=False for full runs: python bootstrap_experiment.py --full
-    fast = "--full" not in sys.argv
-    main(fast=fast)
+
+    parser = argparse.ArgumentParser(description="Bootstrap flow comparison experiment")
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Run full (slower) configuration instead of fast mode.",
+    )
+    parser.add_argument(
+        "--n-steps",
+        type=int,
+        default=None,
+        help="Override flow run length; if > n_data, uses bootstrap continuation.",
+    )
+    args = parser.parse_args()
+
+    # Default remains fast mode unless --full is passed.
+    main(fast=not args.full, n_steps=args.n_steps)
 
