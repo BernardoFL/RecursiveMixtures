@@ -398,119 +398,60 @@ def build_density_background(config: Dict) -> Tuple[np.ndarray, np.ndarray, np.n
     )
 
 
-def compute_flow_densities(
+def plot_particles(
     config: Dict,
+    true_grid: np.ndarray,
     hk_measure: ParticleMeasure,
     nh_measure: ParticleMeasure,
     nw_measure: ParticleMeasure,
-    kernel: GaussianKernel,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Compute HK, Newton-H, and Newton-W KDE densities on the same grid."""
-    n = config["grid_size"]
-    xs = jnp.linspace(config["grid_min"], config["grid_max"], n)
-    ys = jnp.linspace(config["grid_min"], config["grid_max"], n)
-    X, Y = jnp.meshgrid(xs, ys)
-    grid_points = jnp.stack([X.ravel(), Y.ravel()], axis=1)
-
-    hk_field = hk_measure.kernel_density(kernel, grid_points)
-    nh_field = nh_measure.kernel_density(kernel, grid_points)
-    nw_field = nw_measure.kernel_density(kernel, grid_points)
-
-    return (
-        np.asarray(X),
-        np.asarray(Y),
-        np.asarray(hk_field),
-        np.asarray(nh_field),
-        np.asarray(nw_field),
-    )
-
-
-def plot_density_contours(
-    config: Dict,
-    true_grid: np.ndarray,
-    X: np.ndarray,
-    Y: np.ndarray,
-    hk_field: np.ndarray,
-    nh_field: np.ndarray,
-    nw_field: np.ndarray,
 ):
-    """Single contour plot: true density heatmap with HK, Newton-H, and Newton-W contours."""
-    n = config["grid_size"]
-    hk_grid = hk_field.reshape(n, n)
-    nh_grid = nh_field.reshape(n, n)
-    nw_grid = nw_field.reshape(n, n)
-
+    """
+    Three-panel scatter plot: one panel per flow, particles sized by weight on a
+    true-density heatmap background.
+    """
     extent = [config["grid_min"], config["grid_max"], config["grid_min"], config["grid_max"]]
 
-    fig, ax = plt.subplots(1, 1, figsize=(6, 5))
+    flows = [
+        ("HK",            hk_measure, "teal"),
+        ("Newton-H",      nh_measure, "royalblue"),
+        ("Newton flow",   nw_measure, "crimson"),
+    ]
 
-    # Background: true density heatmap (grayscale, reversed as in bootstrap)
-    ax.imshow(
-        true_grid,
-        origin="lower",
-        extent=extent,
-        aspect="auto",
-        cmap="gray_r",
-    )
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
 
-    # Contour levels (ensure strictly increasing to avoid Matplotlib errors)
-    hk_min, hk_max = float(hk_grid.min()), float(hk_grid.max())
-    if hk_max > hk_min:
-        levels_hk = np.linspace(hk_min, hk_max, 8)
-    else:
-        levels_hk = np.linspace(hk_min, hk_min + 1e-6, 8)
+    for ax, (label, measure, color) in zip(axes, flows):
+        ax.imshow(
+            true_grid,
+            origin="lower",
+            extent=extent,
+            aspect="auto",
+            cmap="gray_r",
+        )
 
-    nh_min, nh_max = float(nh_grid.min()), float(nh_grid.max())
-    if nh_max > nh_min:
-        levels_nh = np.linspace(nh_min, nh_max, 8)
-    else:
-        levels_nh = np.linspace(nh_min, nh_min + 1e-6, 8)
+        atoms = np.asarray(measure.atoms)
+        weights = np.asarray(measure.weights)
+        # Scale marker area so the largest particle has area ~300
+        sizes = weights / weights.max() * 300
 
-    nw_min, nw_max = float(nw_grid.min()), float(nw_grid.max())
-    if nw_max > nw_min:
-        levels_nw = np.linspace(nw_min, nw_max, 8)
-    else:
-        levels_nw = np.linspace(nw_min, nw_min + 1e-6, 8)
+        ax.scatter(
+            atoms[:, 0], atoms[:, 1],
+            s=sizes,
+            c=color,
+            alpha=0.8,
+            edgecolors="white",
+            linewidths=0.4,
+            zorder=3,
+        )
 
-    # HK contours (teal, dashed)
-    ax.contour(
-        X,
-        Y,
-        hk_grid,
-        levels=levels_hk,
-        colors="teal",
-        linewidths=1.6,
-        linestyles="dashed",
-    )
+        ax.set_title(label)
+        ax.set_xlabel("x₁")
+        ax.set_ylabel("x₂")
+        ax.set_xlim(config["grid_min"], config["grid_max"])
+        ax.set_ylim(config["grid_min"], config["grid_max"])
 
-    # Newton-H contours (blue)
-    ax.contour(
-        X,
-        Y,
-        nh_grid,
-        levels=levels_nh,
-        colors="royalblue",
-        linewidths=1.4,
-        linestyles="solid",
-    )
-
-    # Newton-W contours (red)
-    ax.contour(
-        X,
-        Y,
-        nw_grid,
-        levels=levels_nw,
-        colors="crimson",
-        linewidths=1.4,
-        linestyles="solid",
-    )
-
-    ax.set_title("Banana mixture: HK vs Newton-H vs Newton-W")
-    ax.set_xlabel("x1")
-    ax.set_ylabel("x2")
-
+    plt.suptitle("Final particle positions (size ∝ weight)", y=1.02)
     plt.tight_layout()
-    plt.savefig("metastability_density_comparison.png", dpi=200)
+    plt.savefig("metastability_density_comparison.png", dpi=200, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -650,34 +591,24 @@ def main(n_steps: int | None = None):
     print("Computing mode occupancy over time (HK)...")
     occ_hk = mode_occupancy(hk_snaps, dumbbell_means)
 
-    # Plots: density comparison contours and HK mode occupancy
-    print("Creating density comparison and occupancy plots...")
-    X_grid, Y_grid, hk_field, nh_field, nw_field = compute_flow_densities(
-        config,
-        final_hk_measure,
-        nh_measure,
-        nw_measure,
-        kernel,
-    )
+    # Plots: particle scatter and HK mode occupancy
+    print("Creating particle scatter and occupancy plots...")
 
     # Final HK weights summary (for debugging)
     log_w = np.asarray(final_hk_measure.log_weights)
-    w_unnorm = np.exp(log_w - log_w.max())
-    w = w_unnorm / w_unnorm.sum()
+    w = np.exp(log_w - log_w.max()); w /= w.sum()
     print(
         "Final HK weights: "
         f"min={w.min():.3e}, max={w.max():.3e}, "
         f"mean={w.mean():.3e}"
     )
 
-    plot_density_contours(
+    plot_particles(
         config,
         true_grid,
-        X_grid,
-        Y_grid,
-        hk_field,
-        nh_field,
-        nw_field,
+        final_hk_measure,
+        nh_measure,
+        nw_measure,
     )
     plot_mode_occupancy(config, occ_hk)
 
