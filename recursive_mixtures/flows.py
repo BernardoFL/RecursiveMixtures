@@ -1,62 +1,90 @@
 """
 Gradient flow algorithms for mixture models.
 
-This module implements the core gradient flow algorithms:
-- Algorithm A: Newton-Hellinger Flow (weight updates only)
-- Algorithm B: Hellinger-Kantorovich Flow (weight + atom updates)
-- Algorithm C: Repulsive Flow (HK + MMD interaction)
-- Algorithm D: Covariate-Dependent Flow (regression parameters with Langevin)
+- NewtonHellingerFlow (Algorithm A): weight-only updates via Hellinger/Fisher-Rao geometry.
+- NewtonFlow: recursive Bayesian weight update (convex combination).
+- HellingerKantorovichFlow (Algorithm B): weight + atom updates (Hellinger + Wasserstein).
+- NewtonWassersteinFlow: atom-only updates (Wasserstein direction, fixed weights).
+- RepulsiveFlow (Algorithm C): HK + MMD repulsion for particle diversity.
+- CovariateDependentFlow (Algorithm D): regression parameters with Langevin diffusion.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import Callable, Optional, Tuple, Union
+from typing import Callable, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
 import jax.random as jr
 from jax import Array
-from jax.scipy.special import logsumexp
 
-from recursive_mixtures.kernels import Kernel, GaussianKernel
-from recursive_mixtures.measure import ParticleMeasure, Prior, GaussianPrior
+from recursive_mixtures.kernels import Kernel
+from recursive_mixtures.measure import ParticleMeasure, Prior
 from recursive_mixtures.functionals import (
-    Functional,
     LogLikelihoodFunctional,
-    MMDFunctional,
-    KLFunctional,
     SinkhornPriorFunctional,
 )
 
 
+# ---------------------------------------------------------------------------
+# Shared run-loop helper
+# ---------------------------------------------------------------------------
+
+def _prepare_run(
+    data_stream: Array,
+    n_steps: Optional[int],
+    bootstrap_after_data: bool,
+    key: Optional[Array],
+) -> tuple[Array, Array, list]:
+    """
+    Normalise data_stream and build per-step (index, subkey) sequences.
+
+    Returns:
+        data_stream: shape (T, D)
+        indices:     integer index array of length total_steps
+        subkeys:     list of per-step JAX keys (or Nones when key is None)
+    """
+    data_stream = jnp.atleast_2d(data_stream)
+    if data_stream.shape[0] == 1 and data_stream.shape[1] > 1:
+        data_stream = data_stream.T
+
+    n_data = int(data_stream.shape[0])
+    total = n_data if n_steps is None else int(n_steps)
+
+    if total < 0:
+        raise ValueError("n_steps must be non-negative")
+    if total > n_data and not bootstrap_after_data:
+        raise ValueError(
+            "n_steps exceeds data size; set bootstrap_after_data=True to resample"
+        )
+
+    if total <= n_data:
+        indices = jnp.arange(total)
+    else:
+        if key is not None:
+            key, idx_key = jr.split(key)
+            extra = jr.randint(idx_key, shape=(total - n_data,), minval=0, maxval=n_data)
+        else:
+            extra = jnp.arange(n_data, total) % n_data
+        indices = jnp.concatenate([jnp.arange(n_data), extra])
+
+    subkeys = list(jr.split(key, total)) if key is not None else [None] * total
+    return data_stream, indices, subkeys
+
+
+# ---------------------------------------------------------------------------
+# Abstract base
+# ---------------------------------------------------------------------------
+
 class GradientFlow(ABC):
-    """
-    Abstract base class for gradient flows on measure spaces.
-    
-    A gradient flow evolves a measure ρ_t according to the gradient
-    of some energy functional F in an appropriate geometry.
-    """
-    
-    def __init__(
-        self,
-        kernel: Kernel,
-        prior: Prior,
-        step_size: float = 0.1,
-    ):
-        """
-        Initialize gradient flow.
-        
-        Args:
-            kernel: Kernel for likelihood/interactions
-            prior: Prior distribution
-            step_size: Step size α for updates
-        """
+    """Abstract base for gradient flows on measure spaces."""
+
+    def __init__(self, kernel: Kernel, prior: Prior, step_size: float = 0.1):
         self.kernel = kernel
         self.prior = prior
         self.step_size = step_size
-    
+
     @abstractmethod
     def step(
         self,
@@ -64,19 +92,8 @@ class GradientFlow(ABC):
         data: Array,
         key: Optional[Array] = None,
     ) -> ParticleMeasure:
-        """
-        Perform one step of the gradient flow.
-        
-        Args:
-            measure: Current particle measure ρ_t
-            data: New data point(s), shape (D,) or (M, D)
-            key: Optional JAX random key for stochastic methods
-            
-        Returns:
-            Updated particle measure ρ_{t+1}
-        """
-        pass
-    
+        """One step of the gradient flow."""
+
     def run(
         self,
         measure: ParticleMeasure,
@@ -87,156 +104,69 @@ class GradientFlow(ABC):
         bootstrap_after_data: bool = False,
     ) -> Tuple[ParticleMeasure, list[ParticleMeasure]]:
         """
-        Run gradient flow on a stream of data.
-        
+        Run the flow over a data stream.
+
         Args:
-            measure: Initial particle measure
-            data_stream: Data points, shape (T, D) or (T,) for 1D
-            key: JAX random key
-            store_every: Store history every N steps
-            n_steps: Total number of flow steps to run. If None, runs once
-                over the provided data stream.
-            bootstrap_after_data: If True and n_steps exceeds data size n,
-                steps t >= n sample indices uniformly with replacement from
-                the original data stream.
-            
+            measure: Initial particle measure.
+            data_stream: Shape (T, D).
+            key: JAX random key (required for stochastic flows).
+            store_every: Append to history every this many steps.
+            n_steps: Total steps; if > T requires bootstrap_after_data=True.
+            bootstrap_after_data: Resample data uniformly once T is exhausted.
+
         Returns:
-            Tuple of (final_measure, history)
+            (final_measure, history)
         """
-        data_stream = jnp.atleast_2d(data_stream)
-        if data_stream.shape[0] == 1 and data_stream.shape[1] > 1:
-            # Handle 1D data passed as (1, T) instead of (T, 1)
-            data_stream = data_stream.T
-        
-        n_data = int(data_stream.shape[0])
-        total_steps = n_data if n_steps is None else int(n_steps)
-        if total_steps < 0:
-            raise ValueError("n_steps must be non-negative")
-        if total_steps > n_data and not bootstrap_after_data:
-            raise ValueError(
-                "n_steps exceeds data size but bootstrap_after_data is False"
-            )
-
+        data_stream, indices, subkeys = _prepare_run(
+            data_stream, n_steps, bootstrap_after_data, key
+        )
         history = [measure]
-        
-        for t in range(total_steps):
-            if t < n_data:
-                data_idx = t
-            elif key is not None:
-                key, idx_key, subkey = jr.split(key, 3)
-                data_idx = jr.randint(idx_key, shape=(), minval=0, maxval=n_data)
-                data_point = data_stream[data_idx]
-                measure = self.step(measure, data_point, subkey)
-                if (t + 1) % store_every == 0:
-                    history.append(measure)
-                continue
-            else:
-                # Deterministic fallback without a PRNG key.
-                data_idx = t % n_data
-
-            if key is not None:
-                key, subkey = jr.split(key)
-            else:
-                subkey = None
-            data_point = data_stream[data_idx]
-            measure = self.step(measure, data_point, subkey)
-            
+        for t, (idx, subkey) in enumerate(zip(indices, subkeys)):
+            measure = self.step(measure, data_stream[idx], subkey)
             if (t + 1) % store_every == 0:
                 history.append(measure)
-        
         return measure, history
 
 
+# ---------------------------------------------------------------------------
+# Newton-Hellinger Flow (Algorithm A) — weight updates only
+# ---------------------------------------------------------------------------
+
 class NewtonHellingerFlow(GradientFlow):
     """
-    Algorithm A: Newton-Hellinger Flow.
-    
-    Updates only weights while keeping atom locations fixed.
-    This is the Fisher-Rao gradient flow on the space of measures.
-    
-    Weight update: w_i ← w_i * exp(-α * (V_i - V̄))
-    
-    where V_i is the variational derivative of the log-likelihood
-    and V̄ is the weighted mean.
+    Fisher-Rao gradient flow: updates weights, keeps atoms fixed.
+
+    w_i ← w_i · exp(−α (V_i − V̄))
     """
-    
-    def __init__(
-        self,
-        kernel: Kernel,
-        prior: Prior,
-        step_size: float = 0.1,
-    ):
-        """
-        Initialize Newton-Hellinger flow.
-        
-        Args:
-            kernel: Likelihood kernel k(x, θ)
-            prior: Prior distribution (not used in weight updates)
-            step_size: Step size α
-        """
+
+    def __init__(self, kernel: Kernel, prior: Prior, step_size: float = 0.1):
         super().__init__(kernel, prior, step_size)
-        self.likelihood_functional = LogLikelihoodFunctional(kernel)
-    
+        self._ll = LogLikelihoodFunctional(kernel)
+
     def step(
         self,
         measure: ParticleMeasure,
         data: Array,
         key: Optional[Array] = None,
     ) -> ParticleMeasure:
-        """
-        Perform Newton-Hellinger step (weight update only).
-        
-        Args:
-            measure: Current particle measure
-            data: New data point, shape (D,)
-            key: Not used (deterministic)
-            
-        Returns:
-            Updated measure with new weights
-        """
-        data = jnp.atleast_1d(data)
-        if data.ndim == 1:
-            data = data[None, :]  # Add batch dimension
-        
-        # Compute variational derivative at atom locations
-        func = self.likelihood_functional.set_data(data)
-        V = func.variational_derivative(measure)  # Shape (N,)
-        
-        # Compute weighted mean V̄ = Σ_i w_i V_i
-        weights = measure.weights
-        V_bar = jnp.sum(weights * V)
-        
-        # Weight update in log domain: log w_i += -α * (V_i - V̄)
-        # This is the Hellinger gradient direction
-        new_log_weights = measure.log_weights - self.step_size * (V - V_bar)
-        
-        # Return normalized measure
-        return ParticleMeasure(
-            atoms=measure.atoms,
-            log_weights=new_log_weights,
-        ).normalize()
+        data = jnp.atleast_2d(jnp.atleast_1d(data))
+        V = self._ll.set_data(data).variational_derivative(measure)
+        V_bar = jnp.dot(measure.weights, V)
+        new_log_w = measure.log_weights - self.step_size * (V - V_bar)
+        return ParticleMeasure(atoms=measure.atoms, log_weights=new_log_w).normalize()
 
+
+# ---------------------------------------------------------------------------
+# Newton Flow — recursive Bayesian weight update
+# ---------------------------------------------------------------------------
 
 class NewtonFlow(GradientFlow):
     """
-    Newton recursive flow for mixing measures.
-    
-    This implements the update
-    
-        μ_{n+1}(dθ) = (1 - α_n) μ_n(dθ)
-                       + α_n * k(x_{n+1}, θ) μ_n(dθ)
-                         / ∫ k(x_{n+1}, θ) μ_n(dθ),
-    
-    discretized for a particle measure μ_n = Σ_i w_i δ_{θ_i} as
-    
-        w_i^{(n+1)} = (1 - α_n) w_i^{(n)}
-                      + α_n * ẇ_i(x_{n+1}),
-    
-    where
-    
-        ẇ_i(x) = k(x, θ_i) w_i^{(n)} / Σ_j k(x, θ_j) w_j^{(n)}.
-    
-    Atom locations θ_i are kept fixed; only the weights are updated.
+    Recursive Bayesian mixture update.
+
+    w_i^{n+1} = (1−α_n) w_i^n + α_n · k(x, θ_i) w_i^n / Z
+
+    Atom locations are fixed; only weights evolve.
     """
 
     def __init__(
@@ -248,76 +178,34 @@ class NewtonFlow(GradientFlow):
         alpha_seq: Optional[Array] = None,
     ):
         """
-        Initialize Newton flow.
-
         Args:
-            kernel: Likelihood kernel k(x, θ)
-            prior: Prior distribution (kept for API consistency; not used directly)
-            step_size: Default constant step size α when no schedule is provided
-            alpha_fn: Optional callable providing α_n given step index n
-            alpha_seq: Optional array of precomputed α_n values
+            alpha_fn: Optional schedule α_n = alpha_fn(n).
+            alpha_seq: Optional pre-computed array of α_n values.
+            step_size: Constant α used when no schedule is given.
         """
         super().__init__(kernel, prior, step_size)
         self.alpha_fn = alpha_fn
         self.alpha_seq = alpha_seq
 
     def _get_alpha(self, n: int) -> float:
-        """
-        Get α_n for step index n.
-
-        Precedence:
-            1. alpha_seq[n] if provided
-            2. alpha_fn(n) if provided
-            3. self.step_size as constant α
-        """
         if self.alpha_seq is not None:
-            if n < 0 or n >= self.alpha_seq.shape[0]:
-                raise IndexError(
-                    f"alpha_seq has length {self.alpha_seq.shape[0]}, "
-                    f"but requested index n={n}."
-                )
+            if not (0 <= n < self.alpha_seq.shape[0]):
+                raise IndexError(f"alpha_seq length {self.alpha_seq.shape[0]}, got n={n}")
             return float(self.alpha_seq[n])
-
         if self.alpha_fn is not None:
             return float(self.alpha_fn(n))
-
         return float(self.step_size)
 
-    def _newton_update(
-        self,
-        measure: ParticleMeasure,
-        data: Array,
-        alpha: float,
-    ) -> ParticleMeasure:
-        """
-        Core Newton update for a single data point and given α.
-        """
-        x = jnp.atleast_1d(data)
-        if x.ndim == 1:
-            x = x[None, :]  # (1, D)
-
-        # Kernel evaluations k(x, θ_i) for all atoms at this data point
-        K = self.kernel.gram(x, measure.atoms)  # (1, N)
-        k_vals = K[0]  # (N,)
-
-        # Current normalized weights
-        weights = measure.weights  # (N,)
-
-        # Normalization Z = Σ_j w_j k(x, θ_j)
-        Z = jnp.dot(weights, k_vals) + 1e-30
-
-        # Posterior-like weights ẇ_i(x)
-        posterior_weights = (weights * k_vals) / Z
-
-        # Convex combination: w^{(n+1)} = (1 - α) w^{(n)} + α ẇ
-        new_weights = (1.0 - alpha) * weights + alpha * posterior_weights
-
-        # Convert back to log-weights, guard against underflow, then normalize
-        new_log_weights = jnp.log(new_weights + 1e-30)
-
+    def _newton_update(self, measure: ParticleMeasure, data: Array, alpha: float) -> ParticleMeasure:
+        x = jnp.atleast_2d(jnp.atleast_1d(data))
+        k_vals = self.kernel.gram(x, measure.atoms)[0]          # (N,)
+        w = measure.weights
+        Z = jnp.dot(w, k_vals) + 1e-30
+        w_post = w * k_vals / Z
+        new_w = (1.0 - alpha) * w + alpha * w_post
         return ParticleMeasure(
             atoms=measure.atoms,
-            log_weights=new_log_weights,
+            log_weights=jnp.log(new_w + 1e-30),
         ).normalize()
 
     def step(
@@ -326,13 +214,6 @@ class NewtonFlow(GradientFlow):
         data: Array,
         key: Optional[Array] = None,
     ) -> ParticleMeasure:
-        """
-        Single Newton step with constant α = step_size.
-
-        This is mainly for compatibility with the base class; for
-        time-varying α_n, use the run() method of this class.
-        """
-        del key  # Unused; deterministic update
         return self._newton_update(measure, data, float(self.step_size))
 
     def run(
@@ -344,64 +225,30 @@ class NewtonFlow(GradientFlow):
         n_steps: Optional[int] = None,
         bootstrap_after_data: bool = False,
     ) -> Tuple[ParticleMeasure, list[ParticleMeasure]]:
-        """
-        Run Newton flow on a stream of data with schedule (α_n).
-
-        This mirrors GradientFlow.run but uses α_n determined by
-        alpha_seq / alpha_fn / step_size for each step n. If n_steps exceeds
-        data size and bootstrap_after_data=True, extra steps sample points
-        uniformly with replacement from the original data stream.
-        """
-        data_stream = jnp.atleast_2d(data_stream)
-        if data_stream.shape[0] == 1 and data_stream.shape[1] > 1:
-            # Handle 1D data passed as (1, T) instead of (T, 1)
-            data_stream = data_stream.T
-
-        n_data = int(data_stream.shape[0])
-        total_steps = n_data if n_steps is None else int(n_steps)
-        if total_steps < 0:
-            raise ValueError("n_steps must be non-negative")
-        if total_steps > n_data and not bootstrap_after_data:
-            raise ValueError(
-                "n_steps exceeds data size but bootstrap_after_data is False"
-            )
-
+        """Like GradientFlow.run but uses the α_n schedule."""
+        data_stream, indices, _ = _prepare_run(
+            data_stream, n_steps, bootstrap_after_data, key
+        )
         history: list[ParticleMeasure] = [measure]
-
-        for t in range(total_steps):
-            if t < n_data:
-                data_idx = t
-            elif key is not None:
-                key, idx_key = jr.split(key)
-                data_idx = jr.randint(idx_key, shape=(), minval=0, maxval=n_data)
-            else:
-                # Deterministic fallback without a PRNG key.
-                data_idx = t % n_data
-
-            data_point = data_stream[data_idx]
-            alpha_t = self._get_alpha(t)
-            measure = self._newton_update(measure, data_point, alpha_t)
-
+        for t, idx in enumerate(indices):
+            measure = self._newton_update(measure, data_stream[idx], self._get_alpha(t))
             if (t + 1) % store_every == 0:
                 history.append(measure)
-
         return measure, history
 
 
+# ---------------------------------------------------------------------------
+# Hellinger-Kantorovich Flow (Algorithm B) — weight + atom updates
+# ---------------------------------------------------------------------------
+
 class HellingerKantorovichFlow(GradientFlow):
     """
-    Algorithm B: Hellinger-Kantorovich Flow.
-    
-    Updates both weights (Hellinger step) and atom locations (Wasserstein step).
-    This combines the Fisher-Rao and Wasserstein geometries.
-    
-    Step 1 (Hellinger): w_i ← w_i * exp(-α * (V_i - V̄))
-    Step 2 (Wasserstein): θ_i ← θ_i + α * v_i
-    
-    The velocity field v_i is computed from the kernel gradient,
-    optionally regularized with Sinkhorn transport to the prior.
+    Combines Fisher-Rao (weight) and Wasserstein (atom) gradient flows.
+
+    Step 1 – Hellinger:   w_i ← w_i · exp(−α (V_i − V̄))
+    Step 2 – Wasserstein: θ_i ← θ_i + α · λ_W · v_i  + noise
     """
-    
+
     def __init__(
         self,
         kernel: Kernel,
@@ -417,24 +264,18 @@ class HellingerKantorovichFlow(GradientFlow):
         atom_noise_std: float = 0.05,
     ):
         """
-        Initialize Hellinger-Kantorovich flow.
-
         Args:
-            kernel: Likelihood kernel k(x, θ)
-            prior: Prior distribution
-            step_size: Step size α
-            wasserstein_weight: Weight for atom updates (relative to Hellinger)
-            sinkhorn_reg: Sinkhorn regularization parameter ε
-            use_sinkhorn: Whether to add Sinkhorn regularization drift
-            prior_particles: Particle representation of prior (computed if None)
-            prior_flow_weight: Weight λ for Sinkhorn prior force in Hellinger step
-            prior_mc_samples: Number M of Monte Carlo prior measures per step
-            sinkhorn_num_iters: Sinkhorn iterations per OT solve (fewer = faster)
-            atom_noise_std: Standard deviation multiplier for Gaussian noise
-                added to atom updates at each step.
+            wasserstein_weight: Scale factor λ_W for atom drift.
+            sinkhorn_reg: Entropy regularisation ε for OT.
+            use_sinkhorn: Add Sinkhorn drift toward prior in atom update.
+            prior_particles: Fixed prior particle measure (re-used every step).
+            prior_flow_weight: Weight λ for Sinkhorn prior force in the weight update.
+            prior_mc_samples: Number M of Monte Carlo prior draws per step.
+            sinkhorn_num_iters: Sinkhorn iterations per OT solve.
+            atom_noise_std: σ for isotropic Gaussian noise added to atom updates.
         """
         super().__init__(kernel, prior, step_size)
-        self.likelihood_functional = LogLikelihoodFunctional(kernel)
+        self._ll = LogLikelihoodFunctional(kernel)
         self.wasserstein_weight = wasserstein_weight
         self.sinkhorn_reg = sinkhorn_reg
         self.use_sinkhorn = use_sinkhorn
@@ -443,203 +284,107 @@ class HellingerKantorovichFlow(GradientFlow):
         self.prior_mc_samples = prior_mc_samples
         self.sinkhorn_num_iters = sinkhorn_num_iters
         self.atom_noise_std = atom_noise_std
-    
-    def _get_prior_particles(
-        self,
-        key: Array,
-        n_particles: int,
-    ) -> ParticleMeasure:
-        """Get or create prior particle measure."""
-        if self._prior_particles is not None:
-            return self._prior_particles
-        return self.prior.to_particle_measure(key, n_particles)
-    
-    def _compute_velocity(
-        self,
-        measure: ParticleMeasure,
-        data: Array,
-    ) -> Array:
-        """
-        Compute velocity field v_i for atom updates.
-        
-        v_i = ∇_θ k(x, θ_i) / ∫ k(x, θ) dρ
-        
-        This is the Wasserstein gradient direction.
-        
-        Args:
-            measure: Current particle measure
-            data: Data point(s)
-            
-        Returns:
-            Velocity at each atom, shape (N, D)
-        """
+
+    # --- private helpers ---
+
+    def _get_prior_particles(self, key: Array, n: int) -> ParticleMeasure:
+        return self._prior_particles if self._prior_particles is not None \
+            else self.prior.to_particle_measure(key, n)
+
+    def _compute_velocity(self, measure: ParticleMeasure, data: Array) -> Array:
+        """Wasserstein velocity v_i = ∇_θ k(x, θ_i) / Z, averaged over data."""
         data = jnp.atleast_2d(data)
-        
-        # Compute normalization: Z = ∫ k(x, θ) dρ = Σ_j w_j k(x, θ_j)
-        K = self.kernel.gram(data, measure.atoms)  # (M, N)
-        Z = jnp.dot(K, measure.weights)  # (M,)
-        
-        # Compute gradient ∇_θ k(x, θ_i) for each atom
-        # We need grad_y since θ_i is the second argument
-        # Shape: (M, N, D)
-        def grad_at_atom(theta_i):
-            """Gradient w.r.t. atom location for all data points."""
-            return jax.vmap(lambda x: self.kernel.grad_y(x, theta_i))(data)
-        
-        grad_K = jax.vmap(grad_at_atom)(measure.atoms)  # (N, M, D)
-        grad_K = jnp.transpose(grad_K, (1, 0, 2))  # (M, N, D)
-        
-        # Velocity: average over data, normalized by Z
-        # v_i = (1/M) Σ_m ∇_θ k(x_m, θ_i) / Z_m
-        velocity = jnp.mean(grad_K / (Z[:, None, None] + 1e-10), axis=0)  # (N, D)
-        
-        return velocity
-    
+        K = self.kernel.gram(data, measure.atoms)          # (M, N)
+        Z = jnp.dot(K, measure.weights)                    # (M,)
+        grad_K = jax.vmap(                                  # (N, M, D)
+            lambda theta_i: jax.vmap(
+                lambda x: self.kernel.grad_y(x, theta_i)
+            )(data)
+        )(measure.atoms)
+        grad_K = jnp.transpose(grad_K, (1, 0, 2))          # (M, N, D)
+        return jnp.mean(grad_K / (Z[:, None, None] + 1e-10), axis=0)  # (N, D)
+
     def _compute_sinkhorn_drift(
-        self,
-        measure: ParticleMeasure,
-        prior_measure: ParticleMeasure,
+        self, measure: ParticleMeasure, prior_measure: ParticleMeasure
     ) -> Array:
-        """
-        Compute Sinkhorn-regularized drift toward prior.
-        
-        This adds a term that encourages the measure to stay close
-        to the prior in Wasserstein distance.
-        
-        Args:
-            measure: Current particle measure
-            prior_measure: Target prior measure
-            
-        Returns:
-            Drift velocities, shape (N, D)
-        """
+        """Sinkhorn drift ∇W₂² toward prior, shape (N, D)."""
         from recursive_mixtures.utils import wasserstein_gradient
-        
         return wasserstein_gradient(
-            measure,
-            prior_measure,
-            reg=self.sinkhorn_reg,
-            num_iters=self.sinkhorn_num_iters,
+            measure, prior_measure,
+            reg=self.sinkhorn_reg, num_iters=self.sinkhorn_num_iters,
         )
 
     def _add_atom_noise(self, atoms: Array, key: Optional[Array]) -> Array:
-        """Add Gaussian noise to atom updates when enabled."""
         if self.atom_noise_std <= 0:
             return atoms
         if key is None:
-            raise ValueError(
-                "Atom noise is enabled (atom_noise_std > 0), but no PRNG key was provided."
-            )
-        noise = jr.normal(key, shape=atoms.shape)
-        return atoms + self.step_size * self.atom_noise_std * noise
-    
+            raise ValueError("atom_noise_std > 0 requires a PRNG key.")
+        return atoms + self.step_size * self.atom_noise_std * jr.normal(key, shape=atoms.shape)
+
+    # --- public step ---
+
     def step(
         self,
         measure: ParticleMeasure,
         data: Array,
         key: Optional[Array] = None,
     ) -> ParticleMeasure:
-        """
-        Perform Hellinger-Kantorovich step.
-        
-        Args:
-            measure: Current particle measure
-            data: New data point, shape (D,)
-            key: JAX random key (for prior sampling if needed)
-            
-        Returns:
-            Updated measure with new weights and atom locations
-        """
-        data = jnp.atleast_1d(data)
-        if data.ndim == 1:
-            data = data[None, :]
-        
-        # Step 1: Hellinger (weight) update
-        func = self.likelihood_functional.set_data(data)
-        g = func.variational_derivative(measure)
-        
-        # Optional prior force via Sinkhorn dual potentials
-        V = g
-        sinkhorn_key = None
-        noise_key = None
-        mc_keys = []
+        data = jnp.atleast_2d(jnp.atleast_1d(data))
+
         need_mc = self.prior_flow_weight != 0.0 and self.prior_mc_samples > 0
-
-        if need_mc and key is None:
+        n_keys = (
+            (self.prior_mc_samples if need_mc else 0)
+            + int(self.use_sinkhorn)
+            + int(self.atom_noise_std > 0)
+        )
+        if n_keys > 0 and key is None:
             raise ValueError(
-                "HellingerKantorovichFlow requires a PRNG key when "
-                "prior_flow_weight > 0 to sample prior measures."
-            )
-        if self.atom_noise_std > 0 and key is None:
-            raise ValueError(
-                "HellingerKantorovichFlow requires a PRNG key when atom_noise_std > 0."
+                "A PRNG key is required (prior MC sampling / Sinkhorn drift / atom noise)."
             )
 
-        if key is not None:
-            n_splits = (
-                (self.prior_mc_samples if need_mc else 0)
-                + (1 if self.use_sinkhorn else 0)
-                + (1 if self.atom_noise_std > 0 else 0)
-            )
-            if n_splits > 0:
-                keys = jr.split(key, n_splits)
-                idx = 0
-                if need_mc:
-                    mc_keys = keys[idx : idx + self.prior_mc_samples]
-                    idx += self.prior_mc_samples
-                if self.use_sinkhorn:
-                    sinkhorn_key = keys[idx]
-                    idx += 1
-                if self.atom_noise_std > 0:
-                    noise_key = keys[idx]
+        # Allocate sub-keys
+        mc_keys, sinkhorn_key, noise_key = [], None, None
+        if key is not None and n_keys > 0:
+            split = jr.split(key, n_keys)
+            cur = 0
+            if need_mc:
+                mc_keys = split[cur:cur + self.prior_mc_samples]; cur += self.prior_mc_samples
+            if self.use_sinkhorn:
+                sinkhorn_key = split[cur]; cur += 1
+            if self.atom_noise_std > 0:
+                noise_key = split[cur]
 
+        # Hellinger weight update
+        g = self._ll.set_data(data).variational_derivative(measure)
         if need_mc:
-            prior_measures = [
-                self.prior.to_particle_measure(k, measure.n_particles)
-                for k in mc_keys
-            ]
-            prior_func = SinkhornPriorFunctional(
-                prior_measures=prior_measures,
-                reg=self.sinkhorn_reg,
-                num_iters=self.sinkhorn_num_iters,
-            )
-            h = prior_func.variational_derivative(measure)
-            V = g + self.prior_flow_weight * h
-        
-        weights = measure.weights
-        V_bar = jnp.sum(weights * V)
-        
-        new_log_weights = measure.log_weights - self.step_size * (V - V_bar)
-        
-        # Step 2: Wasserstein (atom) update
+            prior_ms = [self.prior.to_particle_measure(k, measure.n_particles) for k in mc_keys]
+            h = SinkhornPriorFunctional(
+                prior_ms, self.sinkhorn_reg, self.sinkhorn_num_iters
+            ).variational_derivative(measure)
+            g = g + self.prior_flow_weight * h
+        V_bar = jnp.dot(measure.weights, g)
+        new_log_w = measure.log_weights - self.step_size * (g - V_bar)
+
+        # Wasserstein atom update
         velocity = self._compute_velocity(measure, data)
-        
-        # Add Sinkhorn regularization drift if enabled
         if self.use_sinkhorn and sinkhorn_key is not None:
-            prior_measure = self._get_prior_particles(
-                sinkhorn_key,
-                measure.n_particles,
-            )
-            sinkhorn_drift = self._compute_sinkhorn_drift(measure, prior_measure)
-            velocity = velocity + self.sinkhorn_reg * sinkhorn_drift
-        
+            prior_m = self._get_prior_particles(sinkhorn_key, measure.n_particles)
+            velocity = velocity + self.sinkhorn_reg * self._compute_sinkhorn_drift(measure, prior_m)
         new_atoms = measure.atoms + self.step_size * self.wasserstein_weight * velocity
         new_atoms = self._add_atom_noise(new_atoms, noise_key)
-        
-        return ParticleMeasure(
-            atoms=new_atoms,
-            log_weights=new_log_weights,
-        ).normalize()
 
+        return ParticleMeasure(atoms=new_atoms, log_weights=new_log_w).normalize()
+
+
+# ---------------------------------------------------------------------------
+# Newton-Wasserstein Flow — atom updates only
+# ---------------------------------------------------------------------------
 
 class NewtonWassersteinFlow(HellingerKantorovichFlow):
     """
-    Newton-Wasserstein flow: updates only atom locations, keeping weights fixed.
+    Wasserstein direction only: moves atoms, keeps weights fixed.
 
-    This is the Wasserstein counterpart to Newton-Hellinger:
-    it performs a location update in the Wasserstein direction
-    (with optional Sinkhorn drift toward the prior) but does not
-    change particle weights.
+    Inherits HK infrastructure; weight update is disabled.
     """
 
     def __init__(
@@ -654,35 +399,12 @@ class NewtonWassersteinFlow(HellingerKantorovichFlow):
         sinkhorn_num_iters: int = 30,
         atom_noise_std: float = 0.05,
     ):
-        """
-        Initialize Newton-Wasserstein flow.
-
-        Args:
-            kernel: Likelihood kernel k(x, θ)
-            prior: Prior distribution
-            step_size: Step size α for location updates
-            wasserstein_weight: Weight for atom updates
-            sinkhorn_reg: Sinkhorn regularization parameter ε for drift
-            use_sinkhorn: Whether to add Sinkhorn regularization drift
-            prior_particles: Particle representation of prior (used for drift)
-            sinkhorn_num_iters: Sinkhorn iterations per OT solve (fewer = faster)
-            atom_noise_std: Standard deviation multiplier for Gaussian atom noise.
-        """
-        # We reuse HellingerKantorovichFlow's infrastructure for velocity + drift,
-        # but disable any Hellinger prior force by setting prior_flow_weight=0
-        # and prior_mc_samples=0 (weights are never updated here).
         super().__init__(
-            kernel=kernel,
-            prior=prior,
-            step_size=step_size,
-            wasserstein_weight=wasserstein_weight,
-            sinkhorn_reg=sinkhorn_reg,
-            use_sinkhorn=use_sinkhorn,
-            prior_particles=prior_particles,
-            prior_flow_weight=0.0,
-            prior_mc_samples=0,
-            sinkhorn_num_iters=sinkhorn_num_iters,
-            atom_noise_std=atom_noise_std,
+            kernel=kernel, prior=prior, step_size=step_size,
+            wasserstein_weight=wasserstein_weight, sinkhorn_reg=sinkhorn_reg,
+            use_sinkhorn=use_sinkhorn, prior_particles=prior_particles,
+            prior_flow_weight=0.0, prior_mc_samples=0,
+            sinkhorn_num_iters=sinkhorn_num_iters, atom_noise_std=atom_noise_std,
         )
 
     def step(
@@ -691,68 +413,43 @@ class NewtonWassersteinFlow(HellingerKantorovichFlow):
         data: Array,
         key: Optional[Array] = None,
     ) -> ParticleMeasure:
-        """
-        Perform a Newton-Wasserstein step (atom update only).
+        data = jnp.atleast_2d(jnp.atleast_1d(data))
 
-        Args:
-            measure: Current particle measure
-            data: New data point(s), shape (D,) or (M, D)
-            key: JAX random key (for Sinkhorn drift if enabled)
+        n_keys = int(self.use_sinkhorn) + int(self.atom_noise_std > 0)
+        if n_keys > 0 and key is None:
+            raise ValueError("A PRNG key is required (Sinkhorn drift / atom noise).")
 
-        Returns:
-            Updated measure with new atom locations and unchanged weights.
-        """
-        data = jnp.atleast_1d(data)
-        if data.ndim == 1:
-            data = data[None, :]
+        sinkhorn_key, noise_key = None, None
+        if key is not None and n_keys > 0:
+            split = jr.split(key, n_keys)
+            cur = 0
+            if self.use_sinkhorn:
+                sinkhorn_key = split[cur]; cur += 1
+            if self.atom_noise_std > 0:
+                noise_key = split[cur]
 
-        # Wasserstein velocity from the kernel gradient
         velocity = self._compute_velocity(measure, data)
-
-        sinkhorn_key = key
-        noise_key = None
-        if self.atom_noise_std > 0 and key is None:
-            raise ValueError(
-                "NewtonWassersteinFlow requires a PRNG key when atom_noise_std > 0."
-            )
-        if key is not None and self.use_sinkhorn and self.atom_noise_std > 0:
-            sinkhorn_key, noise_key = jr.split(key)
-        elif key is not None and self.atom_noise_std > 0:
-            noise_key = key
-
-        # Optional Sinkhorn regularization drift toward the prior
         if self.use_sinkhorn and sinkhorn_key is not None:
-            prior_measure = self._get_prior_particles(
-                sinkhorn_key,
-                measure.n_particles,
-            )
-            sinkhorn_drift = self._compute_sinkhorn_drift(measure, prior_measure)
-            velocity = velocity + self.sinkhorn_reg * sinkhorn_drift
+            prior_m = self._get_prior_particles(sinkhorn_key, measure.n_particles)
+            velocity = velocity + self.sinkhorn_reg * self._compute_sinkhorn_drift(measure, prior_m)
 
         new_atoms = measure.atoms + self.step_size * self.wasserstein_weight * velocity
         new_atoms = self._add_atom_noise(new_atoms, noise_key)
 
-        # Keep log_weights unchanged; normalize for numerical stability only
-        return ParticleMeasure(
-            atoms=new_atoms,
-            log_weights=measure.log_weights,
-        ).normalize()
+        return ParticleMeasure(atoms=new_atoms, log_weights=measure.log_weights).normalize()
 
+
+# ---------------------------------------------------------------------------
+# Repulsive Flow (Algorithm C) — HK + MMD repulsion
+# ---------------------------------------------------------------------------
 
 class RepulsiveFlow(HellingerKantorovichFlow):
     """
-    Algorithm C: Repulsive Flow with MMD interaction.
-    
-    Extends the Hellinger-Kantorovich flow with a repulsive term
-    based on Maximum Mean Discrepancy. This encourages particle
-    diversity and prevents collapse.
-    
-    Additional drift: 2λ_rep * (μ_ρ(θ) - μ_P(θ))
-    
-    where μ_ρ(θ) is the kernel mean embedding of the current measure
-    and μ_P(θ) is the kernel mean embedding of the prior.
+    Extends HK with an MMD repulsive term to prevent particle collapse.
+
+    Additional drift: 2 λ_rep (μ_ρ(θ) − μ_P(θ))
     """
-    
+
     def __init__(
         self,
         kernel: Kernel,
@@ -766,21 +463,6 @@ class RepulsiveFlow(HellingerKantorovichFlow):
         prior_particles: Optional[ParticleMeasure] = None,
         atom_noise_std: float = 0.05,
     ):
-        """
-        Initialize Repulsive flow.
-        
-        Args:
-            kernel: Likelihood kernel
-            prior: Prior distribution
-            step_size: Step size α
-            wasserstein_weight: Weight for atom updates
-            sinkhorn_reg: Sinkhorn regularization parameter
-            use_sinkhorn: Whether to use Sinkhorn regularization
-            repulsion_weight: Weight λ_rep for repulsive term
-            repulsion_kernel: Kernel for MMD (default: same as likelihood)
-            prior_particles: Particle representation of prior
-            atom_noise_std: Standard deviation multiplier for Gaussian atom noise.
-        """
         super().__init__(
             kernel, prior, step_size, wasserstein_weight,
             sinkhorn_reg, use_sinkhorn, prior_particles,
@@ -788,137 +470,78 @@ class RepulsiveFlow(HellingerKantorovichFlow):
         )
         self.repulsion_weight = repulsion_weight
         self.repulsion_kernel = repulsion_kernel or kernel
-    
+
     def _compute_repulsive_drift(
-        self,
-        measure: ParticleMeasure,
-        prior_measure: ParticleMeasure,
+        self, measure: ParticleMeasure, prior_measure: ParticleMeasure
     ) -> Array:
-        """
-        Compute repulsive drift from MMD gradient.
-        
-        Drift = 2λ_rep * (μ_ρ(θ) - μ_P(θ))
-        
-        This is the gradient of MMD² with respect to atom locations.
-        
-        Args:
-            measure: Current particle measure
-            prior_measure: Prior particle measure
-            
-        Returns:
-            Repulsive drift, shape (N, D)
-        """
-        # Mean embedding of current measure at atoms
-        mu_rho = measure.mean_embedding(self.repulsion_kernel, measure.atoms)
-        
-        # Mean embedding of prior at atoms
-        mu_P = prior_measure.mean_embedding(self.repulsion_kernel, measure.atoms)
-        
-        # The gradient w.r.t. θ_i involves kernel gradients
-        # ∇_θ μ_ρ(θ) = Σ_j w_j ∇_θ k(θ, θ_j)
-        def grad_embedding_at_atom(theta_i):
-            """Gradient of mean embedding at theta_i."""
-            # Gradient w.r.t. current measure
+        """Gradient of MMD²: 2 λ_rep (μ_ρ(θ_i) − μ_P(θ_i)), shape (N, D)."""
+        def grad_at(theta_i: Array) -> Array:
             grad_rho = jnp.sum(
-                measure.weights[:, None] * 
-                jax.vmap(lambda theta_j: self.repulsion_kernel.grad_x(theta_i, theta_j))(measure.atoms),
-                axis=0
+                measure.weights[:, None]
+                * jax.vmap(lambda tj: self.repulsion_kernel.grad_x(theta_i, tj))(measure.atoms),
+                axis=0,
             )
-            # Gradient w.r.t. prior
             grad_P = jnp.sum(
-                prior_measure.weights[:, None] *
-                jax.vmap(lambda theta_j: self.repulsion_kernel.grad_x(theta_i, theta_j))(prior_measure.atoms),
-                axis=0
+                prior_measure.weights[:, None]
+                * jax.vmap(lambda tj: self.repulsion_kernel.grad_x(theta_i, tj))(prior_measure.atoms),
+                axis=0,
             )
             return grad_rho - grad_P
-        
-        # Compute for all atoms
-        drift = jax.vmap(grad_embedding_at_atom)(measure.atoms)
-        
-        return 2.0 * self.repulsion_weight * drift
-    
+
+        return 2.0 * self.repulsion_weight * jax.vmap(grad_at)(measure.atoms)
+
     def step(
         self,
         measure: ParticleMeasure,
         data: Array,
         key: Optional[Array] = None,
     ) -> ParticleMeasure:
-        """
-        Perform Repulsive flow step.
-        
-        Args:
-            measure: Current particle measure
-            data: New data point
-            key: JAX random key
-            
-        Returns:
-            Updated measure
-        """
-        data = jnp.atleast_1d(data)
-        if data.ndim == 1:
-            data = data[None, :]
-        
-        # Step 1: Hellinger (weight) update
-        func = self.likelihood_functional.set_data(data)
-        V = func.variational_derivative(measure)
-        weights = measure.weights
-        V_bar = jnp.sum(weights * V)
-        
-        new_log_weights = measure.log_weights - self.step_size * (V - V_bar)
-        
-        # Step 2: Wasserstein (atom) update with repulsion
-        velocity = self._compute_velocity(measure, data)
-        
-        # Get prior particles and noise key
-        noise_key = None
-        if key is not None:
-            if self.atom_noise_std > 0:
-                prior_key, noise_key = jr.split(key)
-            else:
-                prior_key = key
-            prior_measure = self._get_prior_particles(prior_key, measure.n_particles)
+        data = jnp.atleast_2d(jnp.atleast_1d(data))
+
+        if self.atom_noise_std > 0 and key is None:
+            raise ValueError("A PRNG key is required when atom_noise_std > 0.")
+
+        prior_key, noise_key = key, None
+        if key is not None and self.atom_noise_std > 0:
+            prior_key, noise_key = jr.split(key)
+
+        # Hellinger weight update
+        V = self._ll.set_data(data).variational_derivative(measure)
+        V_bar = jnp.dot(measure.weights, V)
+        new_log_w = measure.log_weights - self.step_size * (V - V_bar)
+
+        # Prior particles
+        if prior_key is not None:
+            prior_m = self._get_prior_particles(prior_key, measure.n_particles)
         else:
-            # Use cached or create deterministically
-            prior_measure = self._prior_particles
-            if prior_measure is None:
-                prior_measure = ParticleMeasure.initialize(
-                    self.prior.sample(jr.PRNGKey(0), measure.n_particles)
-                )
-            if self.atom_noise_std > 0:
-                raise ValueError(
-                    "RepulsiveFlow requires a PRNG key when atom_noise_std > 0."
-                )
-        
-        # Add Sinkhorn drift
+            prior_m = self._prior_particles or ParticleMeasure.initialize(
+                self.prior.sample(jr.PRNGKey(0), measure.n_particles)
+            )
+
+        # Atom update with Sinkhorn + repulsion
+        velocity = self._compute_velocity(measure, data)
         if self.use_sinkhorn:
-            sinkhorn_drift = self._compute_sinkhorn_drift(measure, prior_measure)
-            velocity = velocity + self.sinkhorn_reg * sinkhorn_drift
-        
-        # Add repulsive drift
-        repulsive_drift = self._compute_repulsive_drift(measure, prior_measure)
-        velocity = velocity + repulsive_drift
-        
+            velocity = velocity + self.sinkhorn_reg * self._compute_sinkhorn_drift(measure, prior_m)
+        velocity = velocity + self._compute_repulsive_drift(measure, prior_m)
         new_atoms = measure.atoms + self.step_size * self.wasserstein_weight * velocity
         new_atoms = self._add_atom_noise(new_atoms, noise_key)
-        
-        return ParticleMeasure(
-            atoms=new_atoms,
-            log_weights=new_log_weights,
-        ).normalize()
 
+        return ParticleMeasure(atoms=new_atoms, log_weights=new_log_w).normalize()
+
+
+# ---------------------------------------------------------------------------
+# Covariate-Dependent Flow (Algorithm D) — regression + Langevin
+# ---------------------------------------------------------------------------
 
 class CovariateDependentFlow(GradientFlow):
     """
-    Algorithm D: Covariate-Dependent Flow.
-    
-    Atoms are regression parameters η, and the likelihood depends
-    on covariates z through a linear model: Φ_η(z) = η · z.
-    
-    Input: Tuple (x_t, z_t) of response and covariates.
-    Drift: ∇_η log k(x | Φ_η(z)) computed via chain rule.
-    Diffusion: Langevin noise √(2λ) * ξ for exploration.
+    Atoms are regression parameters η; likelihood depends on covariates z.
+
+    Prediction: Φ_η(z) = η · z
+    Drift:      ∇_η log k(x | Φ_η(z))
+    Diffusion:  √(2λ) · ξ  (Langevin noise)
     """
-    
+
     def __init__(
         self,
         kernel: Kernel,
@@ -927,137 +550,46 @@ class CovariateDependentFlow(GradientFlow):
         diffusion_weight: float = 0.01,
         hellinger_weight: float = 1.0,
     ):
-        """
-        Initialize Covariate-Dependent flow.
-        
-        Args:
-            kernel: Likelihood kernel k(x, μ) where μ = Φ_η(z)
-            prior: Prior on regression parameters η
-            step_size: Step size α
-            diffusion_weight: Langevin diffusion weight λ
-            hellinger_weight: Weight for Hellinger (weight) updates
-        """
         super().__init__(kernel, prior, step_size)
         self.diffusion_weight = diffusion_weight
         self.hellinger_weight = hellinger_weight
-        self.likelihood_functional = LogLikelihoodFunctional(kernel)
-    
-    def _linear_model(self, eta: Array, z: Array) -> Array:
-        """
-        Compute linear model Φ_η(z) = η · z.
-        
-        Args:
-            eta: Regression parameters, shape (D_eta,)
-            z: Covariates, shape (D_z,) or (D_z, D_eta) for matrix
-            
-        Returns:
-            Prediction, shape depends on z
-        """
-        # For simplicity, assume z and eta have compatible shapes
-        # η · z can be dot product or matrix-vector product
+        self._ll = LogLikelihoodFunctional(kernel)
+
+    def _predict(self, eta: Array, z: Array) -> Array:
         return jnp.dot(z, eta)
-    
-    def _compute_drift(
-        self,
-        measure: ParticleMeasure,
-        x: Array,
-        z: Array,
-    ) -> Array:
-        """
-        Compute gradient drift ∇_η log k(x | Φ_η(z)).
-        
-        Uses JAX autodiff with chain rule through the linear model.
-        
-        Args:
-            measure: Current particle measure (atoms are η parameters)
-            x: Response variable
-            z: Covariates
-            
-        Returns:
-            Drift velocities, shape (N, D)
-        """
-        def log_likelihood_at_eta(eta):
-            """Log likelihood for single parameter eta."""
-            mu = self._linear_model(eta, z)
-            # k(x, mu) is the likelihood kernel
-            return jnp.log(self.kernel(x, mu) + 1e-30)
-        
-        # Compute gradient for each atom
-        grad_fn = jax.grad(log_likelihood_at_eta)
-        drift = jax.vmap(grad_fn)(measure.atoms)
-        
-        return drift
-    
-    def _compute_variational_derivative(
-        self,
-        measure: ParticleMeasure,
-        x: Array,
-        z: Array,
-    ) -> Array:
-        """
-        Compute variational derivative for weight updates.
-        
-        V_i = -k(x, Φ_{η_i}(z)) / Σ_j w_j k(x, Φ_{η_j}(z))
-        """
-        # Compute predictions for all atoms
-        predictions = jax.vmap(lambda eta: self._linear_model(eta, z))(measure.atoms)
-        
-        # Compute kernel values k(x, μ_i)
-        K = jax.vmap(lambda mu: self.kernel(x, mu))(predictions)  # (N,)
-        
-        # Normalization
-        Z = jnp.sum(measure.weights * K)
-        
-        # Variational derivative
-        V = -K / (Z + 1e-30)
-        
-        return V
-    
+
+    def _drift(self, measure: ParticleMeasure, x: Array, z: Array) -> Array:
+        """∇_η log k(x | Φ_η(z)) for each atom, shape (N, D)."""
+        def log_lik(eta):
+            return jnp.log(self.kernel(x, self._predict(eta, z)) + 1e-30)
+        return jax.vmap(jax.grad(log_lik))(measure.atoms)
+
+    def _var_deriv(self, measure: ParticleMeasure, x: Array, z: Array) -> Array:
+        """Variational derivative V_i = −k(x, μ_i) / Z, shape (N,)."""
+        preds = jax.vmap(lambda eta: self._predict(eta, z))(measure.atoms)
+        K = jax.vmap(lambda mu: self.kernel(x, mu))(preds)
+        Z = jnp.dot(measure.weights, K)
+        return -K / (Z + 1e-30)
+
     def step(
         self,
         measure: ParticleMeasure,
         data: Tuple[Array, Array],
         key: Optional[Array] = None,
     ) -> ParticleMeasure:
-        """
-        Perform Covariate-Dependent flow step.
-        
-        Args:
-            measure: Current particle measure (atoms are η)
-            data: Tuple (x, z) of response and covariates
-            key: JAX random key for Langevin noise
-            
-        Returns:
-            Updated measure
-        """
-        x, z = data
-        x = jnp.atleast_1d(x)
-        z = jnp.atleast_1d(z)
-        
-        # Step 1: Hellinger (weight) update
-        V = self._compute_variational_derivative(measure, x, z)
-        weights = measure.weights
-        V_bar = jnp.sum(weights * V)
-        
-        new_log_weights = measure.log_weights - \
-            self.step_size * self.hellinger_weight * (V - V_bar)
-        
-        # Step 2: Drift update
-        drift = self._compute_drift(measure, x, z)
-        
-        new_atoms = measure.atoms + self.step_size * drift
-        
-        # Step 3: Langevin diffusion (if key provided)
+        x, z = jnp.atleast_1d(data[0]), jnp.atleast_1d(data[1])
+
+        V = self._var_deriv(measure, x, z)
+        V_bar = jnp.dot(measure.weights, V)
+        new_log_w = measure.log_weights - self.step_size * self.hellinger_weight * (V - V_bar)
+
+        new_atoms = measure.atoms + self.step_size * self._drift(measure, x, z)
         if key is not None and self.diffusion_weight > 0:
             noise = jr.normal(key, shape=measure.atoms.shape)
-            diffusion = jnp.sqrt(2 * self.diffusion_weight) * noise
-            new_atoms = new_atoms + self.step_size * diffusion
-        
-        return ParticleMeasure(
-            atoms=new_atoms,
-            log_weights=new_log_weights,
-        ).normalize()
-    
+            new_atoms = new_atoms + self.step_size * jnp.sqrt(2 * self.diffusion_weight) * noise
+
+        return ParticleMeasure(atoms=new_atoms, log_weights=new_log_w).normalize()
+
     def run_regression(
         self,
         measure: ParticleMeasure,
@@ -1068,114 +600,47 @@ class CovariateDependentFlow(GradientFlow):
         n_steps: Optional[int] = None,
         bootstrap_after_data: bool = False,
     ) -> Tuple[ParticleMeasure, list[ParticleMeasure]]:
-        """
-        Run flow on regression data (X responses, Z covariates).
-        
-        Args:
-            measure: Initial particle measure
-            X: Response variables, shape (T,) or (T, D_x)
-            Z: Covariates, shape (T, D_z)
-            key: JAX random key
-            store_every: Store history every N steps
-            n_steps: Total number of flow steps to run. If None, runs once
-                over the provided paired (X, Z) stream.
-            bootstrap_after_data: If True and n_steps exceeds dataset size n,
-                steps t >= n sample paired (X_i, Z_i) uniformly with
-                replacement from the original data.
-            
-        Returns:
-            Tuple of (final_measure, history)
-        """
-        X = jnp.atleast_1d(X)
+        """Run on paired (X, Z) regression data with optional bootstrap continuation."""
+        X = jnp.atleast_2d(jnp.atleast_1d(X))
         Z = jnp.atleast_2d(Z)
-        
-        if X.ndim == 1:
-            X = X[:, None]
-        
-        n_data = int(X.shape[0])
-        total_steps = n_data if n_steps is None else int(n_steps)
-        if total_steps < 0:
-            raise ValueError("n_steps must be non-negative")
-        if total_steps > n_data and not bootstrap_after_data:
-            raise ValueError(
-                "n_steps exceeds data size but bootstrap_after_data is False"
-            )
-
+        # Use X as the driver for _prepare_run (Z indexed identically)
+        X, indices, subkeys = _prepare_run(X, n_steps, bootstrap_after_data, key)
         history = [measure]
-        
-        for t in range(total_steps):
-            if t < n_data:
-                data_idx = t
-            elif key is not None:
-                key, idx_key, subkey = jr.split(key, 3)
-                data_idx = jr.randint(idx_key, shape=(), minval=0, maxval=n_data)
-                x, z = X[data_idx], Z[data_idx]
-                measure = self.step(measure, (x, z), subkey)
-                if (t + 1) % store_every == 0:
-                    history.append(measure)
-                continue
-            else:
-                # Deterministic fallback without a PRNG key.
-                data_idx = t % n_data
-
-            if key is not None:
-                key, subkey = jr.split(key)
-            else:
-                subkey = None
-            x, z = X[data_idx], Z[data_idx]
-            measure = self.step(measure, (x, z), subkey)
-            
+        for t, (idx, subkey) in enumerate(zip(indices, subkeys)):
+            measure = self.step(measure, (X[idx], Z[idx]), subkey)
             if (t + 1) % store_every == 0:
                 history.append(measure)
-        
         return measure, history
 
 
-# Convenience function for creating flows
-def create_flow(
-    algorithm: str,
-    kernel: Kernel,
-    prior: Prior,
-    **kwargs,
-) -> GradientFlow:
-    """
-    Factory function for creating gradient flows.
-    
-    Args:
-        algorithm: One of
-            'newton', 'newton_flow',
-            'newton_hellinger', 'hellinger', 'a',
-            'hk', 'hellinger_kantorovich', 'b',
-            'repulsive', 'mmd', 'c',
-            'covariate', 'regression', 'd'
-        kernel: Kernel function
-        prior: Prior distribution
-        **kwargs: Additional arguments for specific flow types
-        
-    Returns:
-        Configured GradientFlow instance
-    """
-    flows = {
-        'newton': NewtonFlow,
-        'newton_flow': NewtonFlow,
-        'newton_hellinger': NewtonHellingerFlow,
-        'hellinger': NewtonHellingerFlow,
-        'a': NewtonHellingerFlow,
-        'hk': HellingerKantorovichFlow,
-        'hellinger_kantorovich': HellingerKantorovichFlow,
-        'b': HellingerKantorovichFlow,
-        'repulsive': RepulsiveFlow,
-        'mmd': RepulsiveFlow,
-        'c': RepulsiveFlow,
-        'covariate': CovariateDependentFlow,
-        'regression': CovariateDependentFlow,
-        'd': CovariateDependentFlow,
-    }
-    
-    algorithm = algorithm.lower()
-    if algorithm not in flows:
-        raise ValueError(f"Unknown algorithm: {algorithm}. "
-                        f"Choose from: {list(flows.keys())}")
-    
-    return flows[algorithm](kernel, prior, **kwargs)
+# ---------------------------------------------------------------------------
+# Factory
+# ---------------------------------------------------------------------------
 
+def create_flow(algorithm: str, kernel: Kernel, prior: Prior, **kwargs) -> GradientFlow:
+    """
+    Instantiate a flow by name.
+
+    algorithm: 'newton' | 'newton_hellinger' | 'hk' | 'repulsive' | 'covariate'
+               (and common aliases: 'a', 'b', 'c', 'd', 'hellinger_kantorovich', …)
+    """
+    registry = {
+        "newton":                NewtonFlow,
+        "newton_flow":           NewtonFlow,
+        "newton_hellinger":      NewtonHellingerFlow,
+        "hellinger":             NewtonHellingerFlow,
+        "a":                     NewtonHellingerFlow,
+        "hk":                    HellingerKantorovichFlow,
+        "hellinger_kantorovich": HellingerKantorovichFlow,
+        "b":                     HellingerKantorovichFlow,
+        "repulsive":             RepulsiveFlow,
+        "mmd":                   RepulsiveFlow,
+        "c":                     RepulsiveFlow,
+        "covariate":             CovariateDependentFlow,
+        "regression":            CovariateDependentFlow,
+        "d":                     CovariateDependentFlow,
+    }
+    key = algorithm.lower()
+    if key not in registry:
+        raise ValueError(f"Unknown algorithm '{algorithm}'. Choose from: {sorted(registry)}")
+    return registry[key](kernel, prior, **kwargs)

@@ -313,6 +313,7 @@ class SinkhornPriorFunctional(Functional):
         self,
         prior_measures: list["ParticleMeasure"],
         reg: float = 0.1,
+        num_iters: int = 30,
     ):
         """
         Initialize Sinkhorn-based prior functional.
@@ -320,11 +321,13 @@ class SinkhornPriorFunctional(Functional):
         Args:
             prior_measures: List of prior particle measures {p_m}
             reg: Sinkhorn regularization parameter ε
+            num_iters: Number of Sinkhorn iterations (fewer = faster, less accurate)
         """
         if len(prior_measures) == 0:
             raise ValueError("SinkhornPriorFunctional requires at least one prior measure")
         self.prior_measures = prior_measures
         self.reg = reg
+        self.num_iters = num_iters
     
     def __call__(self, measure: "ParticleMeasure") -> Array:
         """
@@ -362,21 +365,17 @@ class SinkhornPriorFunctional(Functional):
         f_sum = jnp.zeros(n_atoms)
         
         for prior_measure in self.prior_measures:
-            # Cost matrix between current atoms and prior atoms
-            M = compute_cost_matrix(atoms, prior_measure.atoms, metric="sqeuclidean")
-            
-            # Dual potentials (f at source atoms, g at prior atoms)
+            C = compute_cost_matrix(atoms, prior_measure.atoms, metric="sqeuclidean")
             f, _ = compute_sinkhorn_potentials(
                 a=weights,
                 b=prior_measure.weights,
-                M=M,
+                M=C,
                 reg=self.reg,
+                num_iters=self.num_iters,
             )
             f_sum = f_sum + f
-        
-        # Average over M prior samples
-        M_count = float(len(self.prior_measures))
-        h = f_sum / M_count
+
+        h = f_sum / float(len(self.prior_measures))
         
         return h
 
