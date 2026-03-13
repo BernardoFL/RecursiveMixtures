@@ -136,12 +136,20 @@ class NewtonHellingerFlow(GradientFlow):
     """
     Fisher-Rao gradient flow: updates weights, keeps atoms fixed.
 
-    w_i ← w_i · exp(−α (V_i − V̄))
+    Step 1 – Hellinger:  w_i ← w_i · exp(−α (V_i − V̄))
+    Step 2 – Resample:   atoms resampled by updated weights (optional)
     """
 
-    def __init__(self, kernel: Kernel, prior: Prior, step_size: float = 0.1):
+    def __init__(
+        self,
+        kernel: Kernel,
+        prior: Prior,
+        step_size: float = 0.1,
+        resample: bool = True,
+    ):
         super().__init__(kernel, prior, step_size)
         self._ll = LogLikelihoodFunctional(kernel)
+        self.resample = resample
 
     def step(
         self,
@@ -149,11 +157,16 @@ class NewtonHellingerFlow(GradientFlow):
         data: Array,
         key: Optional[Array] = None,
     ) -> ParticleMeasure:
+        if self.resample and key is None:
+            raise ValueError("Resampling requires a PRNG key.")
         data = jnp.atleast_2d(jnp.atleast_1d(data))
         V = self._ll.set_data(data).variational_derivative(measure)
         V_bar = jnp.dot(measure.weights, V)
         new_log_w = measure.log_weights - self.step_size * (V - V_bar)
-        return ParticleMeasure(atoms=measure.atoms, log_weights=new_log_w).normalize()
+        updated = ParticleMeasure(atoms=measure.atoms, log_weights=new_log_w).normalize()
+        if self.resample:
+            return updated.resample(key)
+        return updated
 
 
 # ---------------------------------------------------------------------------
@@ -262,6 +275,7 @@ class HellingerKantorovichFlow(GradientFlow):
         prior_mc_samples: int = 1,
         sinkhorn_num_iters: int = 30,
         atom_noise_std: float = 0.05,
+        resample: bool = True,
     ):
         """
         Args:
@@ -273,6 +287,7 @@ class HellingerKantorovichFlow(GradientFlow):
             prior_mc_samples: Number M of Monte Carlo prior draws per step.
             sinkhorn_num_iters: Sinkhorn iterations per OT solve.
             atom_noise_std: σ for isotropic Gaussian noise added to atom updates.
+            resample: If True, resample atoms by updated weights after Hellinger step.
         """
         super().__init__(kernel, prior, step_size)
         self._ll = LogLikelihoodFunctional(kernel)
@@ -284,6 +299,7 @@ class HellingerKantorovichFlow(GradientFlow):
         self.prior_mc_samples = prior_mc_samples
         self.sinkhorn_num_iters = sinkhorn_num_iters
         self.atom_noise_std = atom_noise_std
+        self.resample = resample
 
     # --- private helpers ---
 
@@ -336,14 +352,15 @@ class HellingerKantorovichFlow(GradientFlow):
             (self.prior_mc_samples if need_mc else 0)
             + int(self.use_sinkhorn)
             + int(self.atom_noise_std > 0)
+            + int(self.resample)
         )
         if n_keys > 0 and key is None:
             raise ValueError(
-                "A PRNG key is required (prior MC sampling / Sinkhorn drift / atom noise)."
+                "A PRNG key is required (prior MC sampling / Sinkhorn drift / atom noise / resample)."
             )
 
         # Allocate sub-keys
-        mc_keys, sinkhorn_key, noise_key = [], None, None
+        mc_keys, sinkhorn_key, noise_key, resample_key = [], None, None, None
         if key is not None and n_keys > 0:
             split = jr.split(key, n_keys)
             cur = 0
@@ -352,7 +369,9 @@ class HellingerKantorovichFlow(GradientFlow):
             if self.use_sinkhorn:
                 sinkhorn_key = split[cur]; cur += 1
             if self.atom_noise_std > 0:
-                noise_key = split[cur]
+                noise_key = split[cur]; cur += 1
+            if self.resample:
+                resample_key = split[cur]
 
         # Hellinger weight update
         g = self._ll.set_data(data).variational_derivative(measure)
@@ -365,7 +384,14 @@ class HellingerKantorovichFlow(GradientFlow):
         V_bar = jnp.dot(measure.weights, g)
         new_log_w = measure.log_weights - self.step_size * (g - V_bar)
 
-        # Wasserstein atom update
+        # Resample atoms by updated weights (resets weights to uniform)
+        if self.resample:
+            measure = ParticleMeasure(
+                atoms=measure.atoms, log_weights=new_log_w
+            ).normalize().resample(resample_key)
+            new_log_w = measure.log_weights  # already uniform after resample
+
+        # Wasserstein atom update (on resampled atoms if resampling is on)
         velocity = self._compute_velocity(measure, data)
         if self.use_sinkhorn and sinkhorn_key is not None:
             prior_m = self._get_prior_particles(sinkhorn_key, measure.n_particles)
@@ -405,6 +431,7 @@ class NewtonWassersteinFlow(HellingerKantorovichFlow):
             use_sinkhorn=use_sinkhorn, prior_particles=prior_particles,
             prior_flow_weight=0.0, prior_mc_samples=0,
             sinkhorn_num_iters=sinkhorn_num_iters, atom_noise_std=atom_noise_std,
+            resample=False,  # weights-fixed flow: no Hellinger step, no resampling
         )
 
     def step(
@@ -498,17 +525,31 @@ class RepulsiveFlow(HellingerKantorovichFlow):
     ) -> ParticleMeasure:
         data = jnp.atleast_2d(jnp.atleast_1d(data))
 
-        if self.atom_noise_std > 0 and key is None:
-            raise ValueError("A PRNG key is required when atom_noise_std > 0.")
+        n_keys = 1 + int(self.atom_noise_std > 0) + int(self.resample)
+        if (self.atom_noise_std > 0 or self.resample) and key is None:
+            raise ValueError("A PRNG key is required (atom noise / resample).")
 
-        prior_key, noise_key = key, None
-        if key is not None and self.atom_noise_std > 0:
-            prior_key, noise_key = jr.split(key)
+        prior_key, noise_key, resample_key = key, None, None
+        if key is not None and n_keys > 1:
+            split = jr.split(key, n_keys)
+            prior_key = split[0]
+            cur = 1
+            if self.atom_noise_std > 0:
+                noise_key = split[cur]; cur += 1
+            if self.resample:
+                resample_key = split[cur]
 
         # Hellinger weight update
         V = self._ll.set_data(data).variational_derivative(measure)
         V_bar = jnp.dot(measure.weights, V)
         new_log_w = measure.log_weights - self.step_size * (V - V_bar)
+
+        # Resample atoms by updated weights (resets weights to uniform)
+        if self.resample:
+            measure = ParticleMeasure(
+                atoms=measure.atoms, log_weights=new_log_w
+            ).normalize().resample(resample_key)
+            new_log_w = measure.log_weights
 
         # Prior particles
         if prior_key is not None:
@@ -518,7 +559,7 @@ class RepulsiveFlow(HellingerKantorovichFlow):
                 self.prior.sample(jr.PRNGKey(0), measure.n_particles)
             )
 
-        # Atom update with Sinkhorn + repulsion
+        # Atom update with Sinkhorn + repulsion (on resampled atoms if resampling is on)
         velocity = self._compute_velocity(measure, data)
         if self.use_sinkhorn:
             velocity = velocity + self.sinkhorn_reg * self._compute_sinkhorn_drift(measure, prior_m)
@@ -549,10 +590,12 @@ class CovariateDependentFlow(GradientFlow):
         step_size: float = 0.1,
         diffusion_weight: float = 0.01,
         hellinger_weight: float = 1.0,
+        resample: bool = True,
     ):
         super().__init__(kernel, prior, step_size)
         self.diffusion_weight = diffusion_weight
         self.hellinger_weight = hellinger_weight
+        self.resample = resample
         self._ll = LogLikelihoodFunctional(kernel)
 
     def _predict(self, eta: Array, z: Array) -> Array:
@@ -579,13 +622,30 @@ class CovariateDependentFlow(GradientFlow):
     ) -> ParticleMeasure:
         x, z = jnp.atleast_1d(data[0]), jnp.atleast_1d(data[1])
 
+        if self.resample and key is None:
+            raise ValueError("Resampling requires a PRNG key.")
+
+        # Split key for resample and diffusion if both needed
+        resample_key, diffusion_key = None, key
+        if key is not None and self.resample:
+            resample_key, diffusion_key = jr.split(key)
+
+        # Hellinger weight update
         V = self._var_deriv(measure, x, z)
         V_bar = jnp.dot(measure.weights, V)
         new_log_w = measure.log_weights - self.step_size * self.hellinger_weight * (V - V_bar)
 
+        # Resample atoms by updated weights
+        if self.resample:
+            measure = ParticleMeasure(
+                atoms=measure.atoms, log_weights=new_log_w
+            ).normalize().resample(resample_key)
+            new_log_w = measure.log_weights
+
+        # Drift + Langevin diffusion (on resampled atoms if resampling is on)
         new_atoms = measure.atoms + self.step_size * self._drift(measure, x, z)
-        if key is not None and self.diffusion_weight > 0:
-            noise = jr.normal(key, shape=measure.atoms.shape)
+        if diffusion_key is not None and self.diffusion_weight > 0:
+            noise = jr.normal(diffusion_key, shape=measure.atoms.shape)
             new_atoms = new_atoms + self.step_size * jnp.sqrt(2 * self.diffusion_weight) * noise
 
         return ParticleMeasure(atoms=new_atoms, log_weights=new_log_w).normalize()
