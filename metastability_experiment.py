@@ -599,10 +599,11 @@ def main(n_steps: int | None = None):
         nh_key, nh_idx_key = jr.split(nh_key)
         nh_extra_idx = jr.randint(nh_idx_key, shape=(n_extra,), minval=0, maxval=data_len)
         step_indices = jnp.concatenate([jnp.arange(data_len), nh_extra_idx], axis=0)
+    nh_step_keys = jr.split(nh_key, n_steps)
     t0_nh = time.perf_counter()
     for t in range(n_steps):
         x = data[step_indices[t]]
-        nh_measure = nh_flow.step(nh_measure, x, key=None)
+        nh_measure = nh_flow.step(nh_measure, x, key=nh_step_keys[t])
     time_nh = time.perf_counter() - t0_nh
     print(f"  Newton-Hellinger elapsed: {time_nh:.2f} s")
 
