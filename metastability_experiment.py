@@ -172,33 +172,51 @@ def banana_mixture_score(
 
 
 def setup_config() -> Dict:
-    """Configuration dictionary for the metastability experiment (dumbbell mixture)."""
+    """Configuration dictionary for the metastability experiment (cat-paw mixture)."""
+    # Cat-paw GMM layout (reproduced from user script):
+    #   4 toe pads on an elliptic arc  + 2 side palm pads + 1 large central palm pad.
+    #
+    #   Arc:  cx=0, cy=1.8, r_x=2.6, r_y=1.2,
+    #         angles = linspace(25°, 155°, 4) ≈ [25, 68.33, 111.67, 155] degrees
+    #
+    #   Weights proportional to n_samples in user script:
+    #     toes × 4: 120 ea  →  0.1132 ea
+    #     side pads × 2: 160 ea  →  0.1509 ea
+    #     central pad: 260  →  0.2453
+    #   (total 1060, rounded to sum to 1)
     config = {
-        # Dumbbell-like Gaussian mixture: two main lobes plus a weak bridge (closer, larger variance)
-        "dumbbell_means": jnp.array(
-            [
-                [-1.8, 0.0],  # left lobe
-                [1.8, 0.0],   # right lobe
-                [0.0, 0.0],   # bridge component
-            ]
-        ),
-        "dumbbell_stds": jnp.array(
-            [
-                [1.2, 1.2],
-                [1.2, 1.2],
-                [2.2, 0.6],  # elongated along x, narrow in y
-            ]
-        ),
-        "dumbbell_weights": jnp.array([0.45, 0.45, 0.10]),
+        "dumbbell_means": jnp.array([
+            # Toe pads (arc, left to right)
+            [ 2.356,  2.307],   # Toe 1  (25°)
+            [ 0.966,  2.914],   # Toe 2  (68.33°)
+            [-0.966,  2.914],   # Toe 3  (111.67°)
+            [-2.356,  2.307],   # Toe 4  (155°)
+            # Palm pads
+            [-0.85,  -0.55],    # Pad L
+            [ 0.85,  -0.55],    # Pad R
+            [ 0.00,  -1.45],    # Pad C  (central, larger)
+        ]),
+        "dumbbell_stds": jnp.array([
+            [0.28, 0.28],   # Toe 1
+            [0.28, 0.28],   # Toe 2
+            [0.28, 0.28],   # Toe 3
+            [0.28, 0.28],   # Toe 4
+            [0.38, 0.38],   # Pad L
+            [0.38, 0.38],   # Pad R
+            [0.55, 0.55],   # Pad C
+        ]),
+        "dumbbell_weights": jnp.array([
+            0.1132, 0.1132, 0.1132, 0.1132,  # toes
+            0.1509, 0.1509,                   # side pads
+            0.2453,                           # central pad
+        ]),
         # Data
         "n_data": 1000,
         # Particles (match fast bootstrap settings)
         "n_particles": 50,
-        # HK flow parameters (runtime: ~ n_steps * (prior_mc_samples + 1) * sinkhorn_num_iters Sinkhorn iters)
-        # Smaller step/Wasserstein weight so atoms move more conservatively and stay closer together.
-        # Kernel bandwidth kept small so KDE still tracks the data closely.
+        # HK flow parameters
         "hk_step_size": 0.01,
-        "hk_kernel_bandwidth": 0.8,
+        "hk_kernel_bandwidth": 0.4,
         "hk_sinkhorn_reg": 0.05,
         "hk_sinkhorn_num_iters": 25,
         "hk_wasserstein_weight": 0.03,
@@ -206,14 +224,14 @@ def setup_config() -> Dict:
         "hk_prior_mc_samples": 1,
         # Prior for HK flow
         "prior_mean": jnp.array([0.0, 0.0]),
-        "prior_std": 8.0,
+        "prior_std": 5.0,
         "dp_concentration": 10.0,
-        # Trajectory recording: single long run (shorter, faster run)
+        # Trajectory recording
         "n_steps": 100,
         "record_every": 20,
-        # Density grid for background visualization (finer resolution heatmap)
-        "grid_min": -8.0,
-        "grid_max": 8.0,
+        # Density grid — tight enough to show the cat paw clearly
+        "grid_min": -4.0,
+        "grid_max":  4.0,
         "grid_size": 80,
         # Random seed
         "seed": 2024,
@@ -222,7 +240,7 @@ def setup_config() -> Dict:
 
 
 def generate_dumbbell_data(key: jax.Array, config: Dict) -> jax.Array:
-    """Generate 2D data from the dumbbell Gaussian mixture."""
+    """Generate 2D data from the cat-paw Gaussian mixture."""
     samples, _ = generate_mixture_data(
         key,
         config["n_data"],
@@ -479,7 +497,7 @@ def main(n_steps: int | None = None):
         config["n_steps"] = int(n_steps)
 
     print("=" * 80)
-    print("Metastability Experiment: Banana Mixture — HK vs Newton-H vs Newton-W")
+    print("Metastability Experiment: Cat-Paw Mixture — HK vs Newton-H vs Newton-W")
     print("=" * 80)
 
     key = jr.PRNGKey(config["seed"])
