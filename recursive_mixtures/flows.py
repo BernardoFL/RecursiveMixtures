@@ -212,6 +212,7 @@ class NewtonFlow(GradientFlow):
     w_i^{n+1} = (1−α_n) w_i^n + α_n · k(x, θ_i) w_i^n / Z
 
     Atom locations are fixed; only weights evolve.
+    Includes the same stability safeguards as the Hellinger flows.
     """
 
     def __init__(
@@ -221,16 +222,29 @@ class NewtonFlow(GradientFlow):
         step_size: float = 0.1,
         alpha_fn: Optional[Callable[[int], float]] = None,
         alpha_seq: Optional[Array] = None,
+        resample: bool = True,
+        ess_threshold: float = 0.5,
+        resample_jitter: float = 0.1,
+        weight_floor: float = 0.0,
     ):
         """
         Args:
             alpha_fn: Optional schedule α_n = alpha_fn(n).
             alpha_seq: Optional pre-computed array of α_n values.
             step_size: Constant α used when no schedule is given.
+            resample: Resample atoms when ESS/N < ess_threshold.
+            ess_threshold: ESS/N threshold below which resampling fires.
+            resample_jitter: Noise σ added to resampled atoms as a fraction
+                             of current particle spread.
+            weight_floor: Minimum weight per particle as a multiple of 1/N.
         """
         super().__init__(kernel, prior, step_size)
         self.alpha_fn = alpha_fn
         self.alpha_seq = alpha_seq
+        self.resample = resample
+        self.ess_threshold = ess_threshold
+        self.resample_jitter = resample_jitter
+        self.weight_floor = weight_floor
 
     def _get_alpha(self, n: int) -> float:
         if self.alpha_seq is not None:
@@ -243,15 +257,38 @@ class NewtonFlow(GradientFlow):
 
     def _newton_update(self, measure: ParticleMeasure, data: Array, alpha: float) -> ParticleMeasure:
         x = jnp.atleast_2d(jnp.atleast_1d(data))
-        k_vals = self.kernel.gram(x, measure.atoms)[0]          # (N,)
+        k_vals = self.kernel.gram(x, measure.atoms)[0]   # (N,)
         w = measure.weights
-        Z = jnp.dot(w, k_vals) + 1e-30
+        # Use jnp.maximum for a robust floor on Z — prevents explosion when
+        # all atoms are far from the data point (near-zero kernel values).
+        Z = jnp.maximum(jnp.dot(w, k_vals), 1e-10)
         w_post = w * k_vals / Z
         new_w = (1.0 - alpha) * w + alpha * w_post
-        return ParticleMeasure(
+        # Guard log with a meaningful minimum weight before normalizing
+        result = ParticleMeasure(
             atoms=measure.atoms,
-            log_weights=jnp.log(new_w + 1e-30),
+            log_weights=jnp.log(jnp.maximum(new_w, 1e-30)),
         ).normalize()
+        # Fix 4: weight floor
+        if self.weight_floor > 0:
+            result = result.apply_weight_floor(self.weight_floor)
+        return result
+
+    def _maybe_resample(
+        self,
+        measure: ParticleMeasure,
+        pre_resample_measure: ParticleMeasure,
+        key: Optional[Array],
+    ) -> ParticleMeasure:
+        """Apply ESS-triggered resampling with auto-scaled jitter if key is available."""
+        if not self.resample or key is None:
+            return measure
+        ess_ratio = float(measure.effective_sample_size()) / measure.n_particles
+        if ess_ratio < self.ess_threshold:
+            spread = float(jnp.mean(jnp.sqrt(pre_resample_measure.variance() + 1e-8)))
+            jitter = self.resample_jitter * max(spread, 1e-3)
+            return measure.resample(key, jitter_std=jitter)
+        return measure
 
     def step(
         self,
@@ -259,7 +296,11 @@ class NewtonFlow(GradientFlow):
         data: Array,
         key: Optional[Array] = None,
     ) -> ParticleMeasure:
-        return self._newton_update(measure, data, float(self.step_size))
+        if self.resample and key is None:
+            raise ValueError("NewtonFlow resampling requires a PRNG key.")
+        pre = measure
+        updated = self._newton_update(measure, data, float(self.step_size))
+        return self._maybe_resample(updated, pre, key)
 
     def run(
         self,
@@ -270,13 +311,15 @@ class NewtonFlow(GradientFlow):
         n_steps: Optional[int] = None,
         bootstrap_after_data: bool = False,
     ) -> Tuple[ParticleMeasure, list[ParticleMeasure]]:
-        """Like GradientFlow.run but uses the α_n schedule."""
-        data_stream, indices, _ = _prepare_run(
+        """Like GradientFlow.run but uses the α_n schedule and stability safeguards."""
+        data_stream, indices, subkeys = _prepare_run(
             data_stream, n_steps, bootstrap_after_data, key
         )
         history: list[ParticleMeasure] = [measure]
-        for t, idx in enumerate(indices):
+        for t, (idx, subkey) in enumerate(zip(indices, subkeys)):
+            pre = measure
             measure = self._newton_update(measure, data_stream[idx], self._get_alpha(t))
+            measure = self._maybe_resample(measure, pre, subkey)
             if (t + 1) % store_every == 0:
                 history.append(measure)
         return measure, history

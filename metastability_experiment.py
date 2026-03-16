@@ -564,10 +564,11 @@ def main(n_steps: int | None = None):
         nw_key, nw_idx_key = jr.split(nw_key)
         nw_extra_idx = jr.randint(nw_idx_key, shape=(n_extra,), minval=0, maxval=data_len)
         step_indices_nw = jnp.concatenate([jnp.arange(data_len), nw_extra_idx], axis=0)
+    nw_step_keys = jr.split(nw_key, n_steps)
     t0_nw = time.perf_counter()
     for t in range(n_steps):
         x = data[step_indices_nw[t]]
-        nw_measure = nw_flow.step(nw_measure, x, key=None)
+        nw_measure = nw_flow.step(nw_measure, x, key=nw_step_keys[t])
     time_nw = time.perf_counter() - t0_nw
     print(f"  Newton flow elapsed: {time_nw:.2f} s")
 
