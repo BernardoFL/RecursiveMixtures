@@ -589,7 +589,7 @@ def plot_bootstrap_results(
     ax_right.set_ylabel("y")
 
     plt.tight_layout()
-    plt.savefig("bootstrap_hk_coverage.png", dpi=200)
+    plt.savefig("bootstrap_hk_coverage.pdf", bbox_inches="tight")
     plt.close(fig)
 
 

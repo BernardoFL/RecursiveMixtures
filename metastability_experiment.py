@@ -486,7 +486,7 @@ def plot_particles(
         y=1.02,
     )
     plt.tight_layout()
-    plt.savefig("metastability_density_comparison.png", dpi=200, bbox_inches="tight")
+    plt.savefig("metastability_density_comparison.pdf", bbox_inches="tight")
     plt.close(fig)
 
 
@@ -503,7 +503,7 @@ def plot_mode_occupancy(config: Dict, occ_hk: np.ndarray):
     ax.set_ylabel("Fraction of particles")
     ax.legend(loc="best")
     plt.tight_layout()
-    plt.savefig("mode_occupancy_over_time.png", dpi=200)
+    plt.savefig("mode_occupancy_over_time.pdf", bbox_inches="tight")
     plt.close(fig)
 
 
