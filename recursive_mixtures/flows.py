@@ -137,7 +137,7 @@ class NewtonHellingerFlow(GradientFlow):
     Fisher-Rao gradient flow: updates weights, keeps atoms fixed.
 
     Step 1 – Hellinger:  w_i ← w_i · exp(−α (V_i − V̄))
-    Step 2 – Resample:   atoms resampled by updated weights (optional)
+    Step 2 – Resample:   atoms resampled by updated weights when ESS/N < ess_threshold
     """
 
     def __init__(
@@ -146,10 +146,26 @@ class NewtonHellingerFlow(GradientFlow):
         prior: Prior,
         step_size: float = 0.1,
         resample: bool = True,
+        log_weight_clip: float = 5.0,
+        ess_threshold: float = 0.5,
+        resample_jitter: float = 0.1,
+        weight_floor: float = 0.0,
     ):
+        """
+        Args:
+            log_weight_clip: Max absolute per-step log-weight change (Fix 2).
+            ess_threshold:   Resample only when ESS/N falls below this (Fix 1).
+            resample_jitter: Gaussian noise σ added to resampled atoms as a
+                             fraction of current particle spread (Fix 3).
+            weight_floor:    Minimum weight per particle as a multiple of 1/N (Fix 4).
+        """
         super().__init__(kernel, prior, step_size)
         self._ll = LogLikelihoodFunctional(kernel)
         self.resample = resample
+        self.log_weight_clip = log_weight_clip
+        self.ess_threshold = ess_threshold
+        self.resample_jitter = resample_jitter
+        self.weight_floor = weight_floor
 
     def step(
         self,
@@ -162,10 +178,26 @@ class NewtonHellingerFlow(GradientFlow):
         data = jnp.atleast_2d(jnp.atleast_1d(data))
         V = self._ll.set_data(data).variational_derivative(measure)
         V_bar = jnp.dot(measure.weights, V)
-        new_log_w = measure.log_weights - self.step_size * (V - V_bar)
+
+        # Fix 2: clip per-step log-weight change
+        delta = self.step_size * (V - V_bar)
+        if self.log_weight_clip > 0:
+            delta = jnp.clip(delta, -self.log_weight_clip, self.log_weight_clip)
+        new_log_w = measure.log_weights - delta
+
         updated = ParticleMeasure(atoms=measure.atoms, log_weights=new_log_w).normalize()
+
+        # Fix 4: weight floor
+        if self.weight_floor > 0:
+            updated = updated.apply_weight_floor(self.weight_floor)
+
+        # Fix 1 + 3: ESS-triggered resampling with auto-scaled jitter
         if self.resample:
-            return updated.resample(key)
+            ess_ratio = float(updated.effective_sample_size()) / updated.n_particles
+            if ess_ratio < self.ess_threshold:
+                spread = float(jnp.mean(jnp.sqrt(measure.variance() + 1e-8)))
+                jitter = self.resample_jitter * max(spread, 1e-3)
+                return updated.resample(key, jitter_std=jitter)
         return updated
 
 
@@ -276,6 +308,10 @@ class HellingerKantorovichFlow(GradientFlow):
         sinkhorn_num_iters: int = 30,
         atom_noise_std: float = 0.05,
         resample: bool = True,
+        log_weight_clip: float = 5.0,
+        ess_threshold: float = 0.5,
+        resample_jitter: float = 0.1,
+        weight_floor: float = 0.0,
     ):
         """
         Args:
@@ -288,6 +324,11 @@ class HellingerKantorovichFlow(GradientFlow):
             sinkhorn_num_iters: Sinkhorn iterations per OT solve.
             atom_noise_std: σ for isotropic Gaussian noise added to atom updates.
             resample: If True, resample atoms by updated weights after Hellinger step.
+            log_weight_clip: Max absolute per-step log-weight change (Fix 2).
+            ess_threshold:   Resample only when ESS/N falls below this (Fix 1).
+            resample_jitter: Gaussian noise σ added to resampled atoms as a
+                             fraction of current particle spread (Fix 3).
+            weight_floor:    Minimum weight per particle as a multiple of 1/N (Fix 4).
         """
         super().__init__(kernel, prior, step_size)
         self._ll = LogLikelihoodFunctional(kernel)
@@ -300,6 +341,10 @@ class HellingerKantorovichFlow(GradientFlow):
         self.sinkhorn_num_iters = sinkhorn_num_iters
         self.atom_noise_std = atom_noise_std
         self.resample = resample
+        self.log_weight_clip = log_weight_clip
+        self.ess_threshold = ess_threshold
+        self.resample_jitter = resample_jitter
+        self.weight_floor = weight_floor
 
     # --- private helpers ---
 
@@ -382,16 +427,33 @@ class HellingerKantorovichFlow(GradientFlow):
             ).variational_derivative(measure)
             g = g + self.prior_flow_weight * h
         V_bar = jnp.dot(measure.weights, g)
-        new_log_w = measure.log_weights - self.step_size * (g - V_bar)
 
-        # Resample atoms by updated weights (resets weights to uniform)
+        # Fix 2: clip per-step log-weight change
+        delta = self.step_size * (g - V_bar)
+        if self.log_weight_clip > 0:
+            delta = jnp.clip(delta, -self.log_weight_clip, self.log_weight_clip)
+        new_log_w = measure.log_weights - delta
+
+        updated = ParticleMeasure(atoms=measure.atoms, log_weights=new_log_w).normalize()
+
+        # Fix 4: weight floor
+        if self.weight_floor > 0:
+            updated = updated.apply_weight_floor(self.weight_floor)
+
+        # Fix 1 + 3: ESS-triggered resampling with auto-scaled jitter
         if self.resample:
-            measure = ParticleMeasure(
-                atoms=measure.atoms, log_weights=new_log_w
-            ).normalize().resample(resample_key)
-            new_log_w = measure.log_weights  # already uniform after resample
+            ess_ratio = float(updated.effective_sample_size()) / updated.n_particles
+            if ess_ratio < self.ess_threshold:
+                spread = float(jnp.mean(jnp.sqrt(measure.variance() + 1e-8)))
+                jitter = self.resample_jitter * max(spread, 1e-3)
+                measure = updated.resample(resample_key, jitter_std=jitter)
+            else:
+                measure = updated
+        else:
+            measure = updated
+        new_log_w = measure.log_weights
 
-        # Wasserstein atom update (on resampled atoms if resampling is on)
+        # Wasserstein atom update (on resampled atoms if resampling triggered)
         velocity = self._compute_velocity(measure, data)
         if self.use_sinkhorn and sinkhorn_key is not None:
             prior_m = self._get_prior_particles(sinkhorn_key, measure.n_particles)
@@ -489,11 +551,19 @@ class RepulsiveFlow(HellingerKantorovichFlow):
         repulsion_kernel: Optional[Kernel] = None,
         prior_particles: Optional[ParticleMeasure] = None,
         atom_noise_std: float = 0.05,
+        log_weight_clip: float = 5.0,
+        ess_threshold: float = 0.5,
+        resample_jitter: float = 0.1,
+        weight_floor: float = 0.0,
     ):
         super().__init__(
             kernel, prior, step_size, wasserstein_weight,
             sinkhorn_reg, use_sinkhorn, prior_particles,
             atom_noise_std=atom_noise_std,
+            log_weight_clip=log_weight_clip,
+            ess_threshold=ess_threshold,
+            resample_jitter=resample_jitter,
+            weight_floor=weight_floor,
         )
         self.repulsion_weight = repulsion_weight
         self.repulsion_kernel = repulsion_kernel or kernel
@@ -542,14 +612,31 @@ class RepulsiveFlow(HellingerKantorovichFlow):
         # Hellinger weight update
         V = self._ll.set_data(data).variational_derivative(measure)
         V_bar = jnp.dot(measure.weights, V)
-        new_log_w = measure.log_weights - self.step_size * (V - V_bar)
 
-        # Resample atoms by updated weights (resets weights to uniform)
+        # Fix 2: clip per-step log-weight change
+        delta = self.step_size * (V - V_bar)
+        if self.log_weight_clip > 0:
+            delta = jnp.clip(delta, -self.log_weight_clip, self.log_weight_clip)
+        new_log_w = measure.log_weights - delta
+
+        updated = ParticleMeasure(atoms=measure.atoms, log_weights=new_log_w).normalize()
+
+        # Fix 4: weight floor
+        if self.weight_floor > 0:
+            updated = updated.apply_weight_floor(self.weight_floor)
+
+        # Fix 1 + 3: ESS-triggered resampling with auto-scaled jitter
         if self.resample:
-            measure = ParticleMeasure(
-                atoms=measure.atoms, log_weights=new_log_w
-            ).normalize().resample(resample_key)
-            new_log_w = measure.log_weights
+            ess_ratio = float(updated.effective_sample_size()) / updated.n_particles
+            if ess_ratio < self.ess_threshold:
+                spread = float(jnp.mean(jnp.sqrt(measure.variance() + 1e-8)))
+                jitter = self.resample_jitter * max(spread, 1e-3)
+                measure = updated.resample(resample_key, jitter_std=jitter)
+            else:
+                measure = updated
+        else:
+            measure = updated
+        new_log_w = measure.log_weights
 
         # Prior particles
         if prior_key is not None:
@@ -591,11 +678,19 @@ class CovariateDependentFlow(GradientFlow):
         diffusion_weight: float = 0.01,
         hellinger_weight: float = 1.0,
         resample: bool = True,
+        log_weight_clip: float = 5.0,
+        ess_threshold: float = 0.5,
+        resample_jitter: float = 0.1,
+        weight_floor: float = 0.0,
     ):
         super().__init__(kernel, prior, step_size)
         self.diffusion_weight = diffusion_weight
         self.hellinger_weight = hellinger_weight
         self.resample = resample
+        self.log_weight_clip = log_weight_clip
+        self.ess_threshold = ess_threshold
+        self.resample_jitter = resample_jitter
+        self.weight_floor = weight_floor
         self._ll = LogLikelihoodFunctional(kernel)
 
     def _predict(self, eta: Array, z: Array) -> Array:
@@ -633,16 +728,33 @@ class CovariateDependentFlow(GradientFlow):
         # Hellinger weight update
         V = self._var_deriv(measure, x, z)
         V_bar = jnp.dot(measure.weights, V)
-        new_log_w = measure.log_weights - self.step_size * self.hellinger_weight * (V - V_bar)
 
-        # Resample atoms by updated weights
+        # Fix 2: clip per-step log-weight change
+        delta = self.step_size * self.hellinger_weight * (V - V_bar)
+        if self.log_weight_clip > 0:
+            delta = jnp.clip(delta, -self.log_weight_clip, self.log_weight_clip)
+        new_log_w = measure.log_weights - delta
+
+        updated = ParticleMeasure(atoms=measure.atoms, log_weights=new_log_w).normalize()
+
+        # Fix 4: weight floor
+        if self.weight_floor > 0:
+            updated = updated.apply_weight_floor(self.weight_floor)
+
+        # Fix 1 + 3: ESS-triggered resampling with auto-scaled jitter
         if self.resample:
-            measure = ParticleMeasure(
-                atoms=measure.atoms, log_weights=new_log_w
-            ).normalize().resample(resample_key)
-            new_log_w = measure.log_weights
+            ess_ratio = float(updated.effective_sample_size()) / updated.n_particles
+            if ess_ratio < self.ess_threshold:
+                spread = float(jnp.mean(jnp.sqrt(measure.variance() + 1e-8)))
+                jitter = self.resample_jitter * max(spread, 1e-3)
+                measure = updated.resample(resample_key, jitter_std=jitter)
+            else:
+                measure = updated
+        else:
+            measure = updated
+        new_log_w = measure.log_weights
 
-        # Drift + Langevin diffusion (on resampled atoms if resampling is on)
+        # Drift + Langevin diffusion (on resampled atoms if resampling triggered)
         new_atoms = measure.atoms + self.step_size * self._drift(measure, x, z)
         if diffusion_key is not None and self.diffusion_weight > 0:
             noise = jr.normal(diffusion_key, shape=measure.atoms.shape)

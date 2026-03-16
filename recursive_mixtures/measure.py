@@ -71,11 +71,50 @@ class ParticleMeasure:
             log_weights=self.log_weights - logsumexp(self.log_weights),
         )
 
-    def resample(self, key: Array, n_particles: Optional[int] = None) -> ParticleMeasure:
-        """Multinomial resampling; returns uniform-weight measure."""
+    def resample(
+        self,
+        key: Array,
+        n_particles: Optional[int] = None,
+        jitter_std: float = 0.0,
+    ) -> ParticleMeasure:
+        """
+        Multinomial resampling; returns uniform-weight measure.
+
+        Args:
+            key: PRNG key.
+            n_particles: Number of particles to draw (default: same as current).
+            jitter_std: If > 0, add N(0, jitter_std²) noise to resampled atoms
+                to break ties between duplicated particles.
+        """
         n = n_particles or self.n_particles
+        key, jitter_key = jr.split(key)
         indices = jr.choice(key, self.n_particles, shape=(n,), p=self.weights, replace=True)
-        return ParticleMeasure.initialize(self.atoms[indices])
+        new_atoms = self.atoms[indices]
+        if jitter_std > 0:
+            new_atoms = new_atoms + jitter_std * jr.normal(jitter_key, shape=new_atoms.shape)
+        return ParticleMeasure.initialize(new_atoms)
+
+    def apply_weight_floor(self, floor: float) -> ParticleMeasure:
+        """
+        Enforce a minimum weight of floor/N per particle and renormalize.
+
+        Prevents complete weight degeneracy by bringing near-zero weights up
+        to a minimum fraction of the uniform weight 1/N.
+
+        Args:
+            floor: Minimum weight expressed as a multiple of 1/N.
+                   E.g. floor=0.1 means no particle can have weight below 0.1/N.
+        """
+        if floor <= 0:
+            return self
+        w = self.weights
+        w_min = floor / self.n_particles
+        w_floored = jnp.clip(w, w_min, 1.0)
+        w_floored = w_floored / w_floored.sum()
+        return ParticleMeasure(
+            atoms=self.atoms,
+            log_weights=jnp.log(w_floored + 1e-30),
+        ).normalize()
 
     def effective_sample_size(self) -> Array:
         """ESS = 1 / Σ w_i²."""
