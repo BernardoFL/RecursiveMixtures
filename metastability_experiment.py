@@ -404,18 +404,25 @@ def plot_particles(
     hk_measure: ParticleMeasure,
     nh_measure: ParticleMeasure,
     nw_measure: ParticleMeasure,
+    initial_measure: ParticleMeasure,
 ):
     """
-    Three-panel scatter plot: one panel per flow, particles sized by weight on a
-    true-density heatmap background.
+    Three-panel scatter plot: one panel per flow.
+    Each panel shows:
+      - True density as a grayscale heatmap background.
+      - Starting atoms (hollow grey circles).
+      - Final atoms (filled, sized by weight).
+      - Arrows connecting each starting atom to its final position.
     """
     extent = [config["grid_min"], config["grid_max"], config["grid_min"], config["grid_max"]]
 
     flows = [
-        ("HK",            hk_measure, "teal"),
-        ("Newton-H",      nh_measure, "royalblue"),
-        ("Newton flow",   nw_measure, "crimson"),
+        ("HK",           hk_measure, "teal"),
+        ("Newton-H",     nh_measure, "royalblue"),
+        ("Newton flow",  nw_measure, "crimson"),
     ]
+
+    init_atoms = np.asarray(initial_measure.atoms)   # (N, 2)
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
 
@@ -428,18 +435,43 @@ def plot_particles(
             cmap="gray_r",
         )
 
-        atoms = np.asarray(measure.atoms)
+        final_atoms = np.asarray(measure.atoms)       # (N, 2)
         weights = np.asarray(measure.weights)
-        # Scale marker area so the largest particle has area ~300
         sizes = weights / weights.max() * 300
 
+        # Starting positions (hollow grey)
         ax.scatter(
-            atoms[:, 0], atoms[:, 1],
-            s=sizes,
-            c=color,
-            alpha=0.8,
-            edgecolors="white",
-            linewidths=0.4,
+            init_atoms[:, 0], init_atoms[:, 1],
+            s=40, c="none",
+            edgecolors="grey", linewidths=0.8,
+            alpha=0.6, zorder=2,
+        )
+
+        # Arrows from start → final
+        for i in range(len(init_atoms)):
+            dx = final_atoms[i, 0] - init_atoms[i, 0]
+            dy = final_atoms[i, 1] - init_atoms[i, 1]
+            if abs(dx) + abs(dy) > 0.05:   # skip trivially short arrows
+                ax.annotate(
+                    "",
+                    xy=(final_atoms[i, 0], final_atoms[i, 1]),
+                    xytext=(init_atoms[i, 0], init_atoms[i, 1]),
+                    arrowprops=dict(
+                        arrowstyle="-|>",
+                        color=color,
+                        alpha=0.35,
+                        lw=0.8,
+                        mutation_scale=8,
+                    ),
+                    zorder=2,
+                )
+
+        # Final positions (filled, size ∝ weight)
+        ax.scatter(
+            final_atoms[:, 0], final_atoms[:, 1],
+            s=sizes, c=color,
+            alpha=0.85,
+            edgecolors="white", linewidths=0.4,
             zorder=3,
         )
 
@@ -449,7 +481,10 @@ def plot_particles(
         ax.set_xlim(config["grid_min"], config["grid_max"])
         ax.set_ylim(config["grid_min"], config["grid_max"])
 
-    plt.suptitle("Final particle positions (size ∝ weight)", y=1.02)
+    plt.suptitle(
+        "Particle trajectories: ○ start → ● final (size ∝ weight)",
+        y=1.02,
+    )
     plt.tight_layout()
     plt.savefig("metastability_density_comparison.png", dpi=200, bbox_inches="tight")
     plt.close(fig)
@@ -610,6 +645,7 @@ def main(n_steps: int | None = None):
         final_hk_measure,
         nh_measure,
         nw_measure,
+        initial_measure,
     )
     plot_mode_occupancy(config, occ_hk)
 
