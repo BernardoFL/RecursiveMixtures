@@ -398,15 +398,11 @@ class HellingerKantorovichFlow(GradientFlow):
     def _compute_velocity(self, measure: ParticleMeasure, data: Array) -> Array:
         """Wasserstein velocity v_i = ∇_θ k(x, θ_i) / Z, averaged over data."""
         data = jnp.atleast_2d(data)
-        K = self.kernel.gram(data, measure.atoms)          # (M, N)
-        Z = jnp.dot(K, measure.weights)                    # (M,)
-        grad_K = jax.vmap(                                  # (N, M, D)
-            lambda theta_i: jax.vmap(
-                lambda x: self.kernel.grad_y(x, theta_i)
-            )(data)
-        )(measure.atoms)
-        grad_K = jnp.transpose(grad_K, (1, 0, 2))          # (M, N, D)
-        return jnp.mean(grad_K / (Z[:, None, None] + 1e-10), axis=0)  # (N, D)
+        K = self.kernel.gram(data, measure.atoms)                        # (M, N)
+        Z = jnp.dot(K, measure.weights)                                  # (M,)
+        # grad_y_gram[m, i, d] = ∇_θ k(x_m, θ_i)[d] — analytical for GaussianKernel
+        grad_K = self.kernel.grad_y_gram(data, measure.atoms)            # (M, N, D)
+        return jnp.mean(grad_K / (Z[:, None, None] + 1e-10), axis=0)    # (N, D)
 
     def _compute_sinkhorn_drift(
         self, measure: ParticleMeasure, prior_measure: ParticleMeasure
@@ -614,21 +610,23 @@ class RepulsiveFlow(HellingerKantorovichFlow):
     def _compute_repulsive_drift(
         self, measure: ParticleMeasure, prior_measure: ParticleMeasure
     ) -> Array:
-        """Gradient of MMD²: 2 λ_rep (μ_ρ(θ_i) − μ_P(θ_i)), shape (N, D)."""
-        def grad_at(theta_i: Array) -> Array:
-            grad_rho = jnp.sum(
-                measure.weights[:, None]
-                * jax.vmap(lambda tj: self.repulsion_kernel.grad_x(theta_i, tj))(measure.atoms),
-                axis=0,
-            )
-            grad_P = jnp.sum(
-                prior_measure.weights[:, None]
-                * jax.vmap(lambda tj: self.repulsion_kernel.grad_x(theta_i, tj))(prior_measure.atoms),
-                axis=0,
-            )
-            return grad_rho - grad_P
+        """
+        Gradient of MMD²: 2 λ_rep (μ_ρ(θ_i) − μ_P(θ_i)), shape (N, D).
 
-        return 2.0 * self.repulsion_weight * jax.vmap(grad_at)(measure.atoms)
+        Uses grad_x_batch to compute all pairwise kernel gradients in one
+        vectorised operation, avoiding nested vmap loops.
+
+        G_rho[i,j,:] = ∇_x k(θ_i, θ_j)
+        grad_rho[i,:] = Σ_j w_j ∇_x k(θ_i, θ_j)
+        """
+        # (N, N, D) — analytical for GaussianKernel
+        G_rho = self.repulsion_kernel.grad_x_batch(measure.atoms, measure.atoms)
+        grad_rho = jnp.einsum('j,ijd->id', measure.weights, G_rho)       # (N, D)
+
+        G_P = self.repulsion_kernel.grad_x_batch(measure.atoms, prior_measure.atoms)
+        grad_P = jnp.einsum('j,ijd->id', prior_measure.weights, G_P)     # (N, D)
+
+        return 2.0 * self.repulsion_weight * (grad_rho - grad_P)
 
     def step(
         self,
