@@ -191,10 +191,10 @@ def setup_config() -> Dict:
             [ 0.966,  2.914],   # Toe 2  (68.33°)
             [-0.966,  2.914],   # Toe 3  (111.67°)
             [-2.356,  2.307],   # Toe 4  (155°)
-            # Palm pads
-            [-0.85,  -0.55],    # Pad L
-            [ 0.85,  -0.55],    # Pad R
-            [ 0.00,  -1.45],    # Pad C  (central, larger)
+            # Palm pads  (central pad above the two side pads)
+            [-0.85,  -1.45],    # Pad L  (lower)
+            [ 0.85,  -1.45],    # Pad R  (lower)
+            [ 0.00,  -0.55],    # Pad C  (central, above side pads)
         ]),
         "dumbbell_stds": jnp.array([
             [0.28, 0.28],   # Toe 1
