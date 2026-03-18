@@ -33,6 +33,8 @@ from recursive_mixtures import (
 from recursive_mixtures.flows import NewtonHellingerFlow
 from recursive_mixtures.utils import generate_mixture_data, true_mixture_density
 
+from paw_distribution import PawDistribution
+
 
 # -----------------------------------------------------------------------------
 # Banana-shaped mixture: log-density, score, sampling
@@ -173,45 +175,12 @@ def banana_mixture_score(
 
 def setup_config() -> Dict:
     """Configuration dictionary for the metastability experiment (cat-paw mixture)."""
-    # Cat-paw GMM layout (reproduced from user script):
-    #   4 toe pads on an elliptic arc  + 2 side palm pads + 1 large central palm pad.
-    #
-    #   Toe arc centred on Pad C (0, -0.55), r=1.6, angles linspace(30°,150°,4):
-    #     [30, 70, 110, 150]°  (+0.3 extra radius separates toes from pad)
-    #   This places the toes close to the palm and following its circular curvature.
-    #
-    #   Weights proportional to n_samples in user script:
-    #     toes × 4: 120 ea  →  0.1132 ea
-    #     side pads × 2: 160 ea  →  0.1509 ea
-    #     central pad: 260  →  0.2453
-    #   (total 1060, rounded to sum to 1)
+    paw = PawDistribution()
+    paw_params = paw.to_dict()
     config = {
-        "dumbbell_means": jnp.array([
-            # Toe pads — arc centred on Pad C, r=1.6  (0.3 extra separation)
-            # x = 1.6*cos(θ),  y = -0.55 + 1.6*sin(θ)
-            [ 1.386,  0.250],   # Toe 1  (30°)
-            [ 0.547,  0.953],   # Toe 2  (70°)
-            [-0.547,  0.953],   # Toe 3  (110°)
-            [-1.386,  0.250],   # Toe 4  (150°)
-            # Palm pads  (central pad above the two side pads)
-            [-0.85,  -1.45],    # Pad L  (lower)
-            [ 0.85,  -1.45],    # Pad R  (lower)
-            [ 0.00,  -0.55],    # Pad C  (central, above side pads)
-        ]),
-        "dumbbell_stds": jnp.array([
-            [0.18, 0.36],   # Toe 1  — elliptical (narrow x, tall y)
-            [0.18, 0.36],   # Toe 2
-            [0.18, 0.36],   # Toe 3
-            [0.18, 0.36],   # Toe 4
-            [0.38, 0.38],   # Pad L
-            [0.38, 0.38],   # Pad R
-            [0.55, 0.55],   # Pad C
-        ]),
-        "dumbbell_weights": jnp.array([
-            0.1132, 0.1132, 0.1132, 0.1132,  # toes
-            0.1509, 0.1509,                   # side pads
-            0.2453,                           # central pad
-        ]),
+        "dumbbell_means": jnp.array(paw_params["means"]),
+        "dumbbell_stds": jnp.array(paw_params["stds"]),
+        "dumbbell_weights": jnp.array(paw_params["weights"]),
         # Data
         "n_data": 1000,
         # Particles (match fast bootstrap settings)
