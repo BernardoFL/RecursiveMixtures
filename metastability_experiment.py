@@ -176,8 +176,8 @@ def setup_config() -> Dict:
     # Cat-paw GMM layout (reproduced from user script):
     #   4 toe pads on an elliptic arc  + 2 side palm pads + 1 large central palm pad.
     #
-    #   Toe arc centred on Pad C (0, -0.55), r=1.3, angles linspace(30°,150°,4):
-    #     [30, 70, 110, 150]°
+    #   Toe arc centred on Pad C (0, -0.55), r=1.6, angles linspace(30°,150°,4):
+    #     [30, 70, 110, 150]°  (+0.3 extra radius separates toes from pad)
     #   This places the toes close to the palm and following its circular curvature.
     #
     #   Weights proportional to n_samples in user script:
@@ -187,12 +187,12 @@ def setup_config() -> Dict:
     #   (total 1060, rounded to sum to 1)
     config = {
         "dumbbell_means": jnp.array([
-            # Toe pads — arc centred on Pad C, r=1.3
-            # x = 1.3*cos(θ),  y = -0.55 + 1.3*sin(θ)
-            [ 1.126,  0.100],   # Toe 1  (30°)
-            [ 0.445,  0.671],   # Toe 2  (70°)
-            [-0.445,  0.671],   # Toe 3  (110°)
-            [-1.126,  0.100],   # Toe 4  (150°)
+            # Toe pads — arc centred on Pad C, r=1.6  (0.3 extra separation)
+            # x = 1.6*cos(θ),  y = -0.55 + 1.6*sin(θ)
+            [ 1.386,  0.250],   # Toe 1  (30°)
+            [ 0.547,  0.953],   # Toe 2  (70°)
+            [-0.547,  0.953],   # Toe 3  (110°)
+            [-1.386,  0.250],   # Toe 4  (150°)
             # Palm pads  (central pad above the two side pads)
             [-0.85,  -1.45],    # Pad L  (lower)
             [ 0.85,  -1.45],    # Pad R  (lower)
@@ -232,8 +232,8 @@ def setup_config() -> Dict:
         "n_steps": 100,
         "record_every": 20,
         # Density grid — tight enough to show the cat paw clearly
-        "grid_min": -4.0,
-        "grid_max":  4.0,
+        "grid_min": -2.5,
+        "grid_max":  2.5,
         "grid_size": 80,
         # Random seed
         "seed": 2024,
