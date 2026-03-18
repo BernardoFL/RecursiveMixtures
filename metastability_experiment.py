@@ -197,10 +197,10 @@ def setup_config() -> Dict:
             [ 0.00,  -0.55],    # Pad C  (central, above side pads)
         ]),
         "dumbbell_stds": jnp.array([
-            [0.28, 0.28],   # Toe 1
-            [0.28, 0.28],   # Toe 2
-            [0.28, 0.28],   # Toe 3
-            [0.28, 0.28],   # Toe 4
+            [0.18, 0.36],   # Toe 1  — elliptical (narrow x, tall y)
+            [0.18, 0.36],   # Toe 2
+            [0.18, 0.36],   # Toe 3
+            [0.18, 0.36],   # Toe 4
             [0.38, 0.38],   # Pad L
             [0.38, 0.38],   # Pad R
             [0.55, 0.55],   # Pad C
