@@ -30,7 +30,6 @@ from recursive_mixtures import (
     HellingerKantorovichFlow,
     NewtonFlow,
 )
-from recursive_mixtures.flows import NewtonHellingerFlow
 from recursive_mixtures.utils import generate_mixture_data, true_mixture_density
 
 from paw_distribution import PawDistribution
@@ -244,13 +243,13 @@ def make_hk_flow_for_metastability(
     return flow
 
 
-def make_newton_hellinger_flow_for_metastability(
+def make_newton_weights_flow_for_metastability(
     prior,
     kernel,
     config: Dict,
-) -> NewtonHellingerFlow:
-    """Configure a Newton-Hellinger flow (weights only, fixed atoms)."""
-    return NewtonHellingerFlow(
+) -> NewtonFlow:
+    """Configure a Newton flow (weights only, fixed atoms)."""
+    return NewtonFlow(
         kernel=kernel,
         prior=prior,
         step_size=config["hk_step_size"],
@@ -404,7 +403,7 @@ def plot_particles(
 
     flows = [
         ("HK",           hk_measure, "teal"),
-        ("Newton-H",     nh_measure, "royalblue"),
+        ("NewtonFlow (weights)", nh_measure, "royalblue"),
         ("Newton flow",  nw_measure, "crimson"),
     ]
 
@@ -514,9 +513,9 @@ def main(n_steps: int | None = None):
     time_hk = time.perf_counter() - t0_hk
     print(f"  HK splitting elapsed: {time_hk:.2f} s")
 
-    # Newton-Hellinger (weights only, fixed atoms)
-    print("Running Newton-Hellinger flow (weights only)...")
-    nh_flow = make_newton_hellinger_flow_for_metastability(prior, kernel, config)
+    # Newton flow (weights only, fixed atoms)
+    print("Running Newton flow (weights only)...")
+    nh_flow = make_newton_weights_flow_for_metastability(prior, kernel, config)
     nh_measure = initial_measure
     n_steps = config["n_steps"]
     data_len = int(data.shape[0])
@@ -534,10 +533,10 @@ def main(n_steps: int | None = None):
         x = data[step_indices[t]]
         nh_measure = nh_flow.step(nh_measure, x, key=nh_step_keys[t])
     time_nh = time.perf_counter() - t0_nh
-    print(f"  Newton-Hellinger elapsed: {time_nh:.2f} s")
+    print(f"  Newton flow (weights only) elapsed: {time_nh:.2f} s")
 
     # Newton flow (recursive weights-only update with fixed atoms)
-    print("Running Newton flow (weights only)...")
+    print("Running Newton flow (reference run)...")
     nw_flow = make_newton_wasserstein_flow_for_metastability(
         prior,
         kernel,
@@ -571,7 +570,7 @@ def main(n_steps: int | None = None):
     print(
         "Atom displacement (mean / max): "
         f"HK={hk_disp.mean():.4f}/{hk_disp.max():.4f}, "
-        f"Newton-H={nh_disp.mean():.4f}/{nh_disp.max():.4f}, "
+        f"NewtonFlow(weights)={nh_disp.mean():.4f}/{nh_disp.max():.4f}, "
         f"NewtonFlow={nw_disp.mean():.4f}/{nw_disp.max():.4f}"
     )
 
@@ -605,7 +604,7 @@ def main(n_steps: int | None = None):
     # Timing summary
     print("\n--- Elapsed times ---")
     print(f"  HK splitting:     {time_hk:.2f} s")
-    print(f"  Newton-Hellinger: {time_nh:.2f} s")
+    print(f"  NewtonFlow(w):    {time_nh:.2f} s")
     print(f"  Newton flow:      {time_nw:.2f} s")
     print("\nSaved figures 'metastability_density_comparison.png' and 'mode_occupancy_over_time.png'.")
 
