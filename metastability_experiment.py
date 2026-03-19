@@ -402,9 +402,9 @@ def plot_particles(
     extent = [config["grid_min"], config["grid_max"], config["grid_min"], config["grid_max"]]
 
     flows = [
-        ("HK",           hk_measure, "teal"),
-        ("NewtonFlow (weights)", nh_measure, "royalblue"),
-        ("Newton flow",  nw_measure, "crimson"),
+        ("Wasserstein-Fisher-Rao", hk_measure, "teal"),
+        ("Fisher-Rao", nh_measure, "royalblue"),
+        ("Newton", nw_measure, "crimson"),
     ]
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
@@ -450,7 +450,7 @@ def plot_mode_occupancy(config: Dict, occ_hk: np.ndarray):
     fig, ax = plt.subplots(figsize=(7, 5))
     for k in range(K):
         ax.plot(times, occ_hk[:, k], label=f"Mode {k+1}")
-    ax.set_title("Mode occupancy - HK")
+    ax.set_title("Mode occupancy - Wasserstein-Fisher-Rao")
     ax.set_xlabel("Step")
     ax.set_ylabel("Fraction of particles")
     ax.legend(loc="best")
@@ -467,7 +467,7 @@ def main(n_steps: int | None = None):
         config["n_steps"] = int(n_steps)
 
     print("=" * 80)
-    print("Metastability Experiment: Cat-Paw Mixture — HK vs Newton-H vs Newton-W")
+    print("Metastability Experiment: Cat-Paw Mixture — Wasserstein-Fisher-Rao vs Fisher-Rao vs Newton")
     print("=" * 80)
 
     key = jr.PRNGKey(config["seed"])
