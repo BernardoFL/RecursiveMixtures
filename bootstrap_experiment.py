@@ -70,8 +70,8 @@ def setup_config(fast: bool = True) -> Dict:
         "use_prior_regularization": True,
         "prior_mc_samples": 1 if fast else 5,  # M (1 = much faster per step)
         "sinkhorn_num_iters": 25 if fast else 50,  # Sinkhorn iters per OT solve
-        # Bootstrap
-        "n_bootstrap": 8 if fast else 32,  # B
+        # Bootstrap replicates per experiment cell (B=1 for quick runs)
+        "n_bootstrap": 1,
         # Prior
         "prior_mean": jnp.array([0.0, 0.0]),
         "prior_std": 3.0,

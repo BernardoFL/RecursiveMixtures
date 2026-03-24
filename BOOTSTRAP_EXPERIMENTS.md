@@ -102,7 +102,7 @@ python bootstrap_experiment.py --study prior
 |------------|------|
 | `n_data_list` / `--n-data-list` | Sample sizes for Studies A and B |
 | `continuation_factor` / `--continuation-factor` | Continuation length multiplier |
-| `n_bootstrap` | Replicates per cell (smaller in `fast` mode) |
+| `n_bootstrap` | Replicates per cell (default **1** for speed; increase for stable intervals) |
 | `use_prior_regularization` | Default `True` in config; Study B overrides per arm |
 | `prior_flow_weight`, `prior_mc_samples` | Strength and MC draws for HK prior term when enabled |
 | `--full` | Heavier defaults (more data, replicates, Sinkhorn work) |
