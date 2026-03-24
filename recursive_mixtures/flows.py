@@ -347,6 +347,7 @@ class HellingerKantorovichFlow(GradientFlow):
         use_sinkhorn: bool = True,
         prior_particles: Optional[ParticleMeasure] = None,
         prior_flow_weight: float = 0.0,
+        use_prior_regularization: bool = True,
         prior_mc_samples: int = 1,
         sinkhorn_num_iters: int = 30,
         atom_noise_std: float = 0.05,
@@ -363,6 +364,9 @@ class HellingerKantorovichFlow(GradientFlow):
             use_sinkhorn: Add Sinkhorn drift toward prior in atom update.
             prior_particles: Fixed prior particle measure (re-used every step).
             prior_flow_weight: Weight λ for Sinkhorn prior force in the weight update.
+            use_prior_regularization: If False, skip the Fisher–Rao (Hellinger) prior
+                term (SinkhornPriorFunctional) even when prior_flow_weight > 0. Does not
+                affect atom-level Sinkhorn drift when use_sinkhorn is True.
             prior_mc_samples: Number M of Monte Carlo prior draws per step.
             sinkhorn_num_iters: Sinkhorn iterations per OT solve.
             atom_noise_std: σ for isotropic Gaussian noise added to atom updates.
@@ -380,6 +384,7 @@ class HellingerKantorovichFlow(GradientFlow):
         self.use_sinkhorn = use_sinkhorn
         self._prior_particles = prior_particles
         self.prior_flow_weight = prior_flow_weight
+        self.use_prior_regularization = use_prior_regularization
         self.prior_mc_samples = prior_mc_samples
         self.sinkhorn_num_iters = sinkhorn_num_iters
         self.atom_noise_std = atom_noise_std
@@ -431,7 +436,11 @@ class HellingerKantorovichFlow(GradientFlow):
     ) -> ParticleMeasure:
         data = jnp.atleast_2d(jnp.atleast_1d(data))
 
-        need_mc = self.prior_flow_weight != 0.0 and self.prior_mc_samples > 0
+        need_mc = (
+            self.use_prior_regularization
+            and self.prior_flow_weight != 0.0
+            and self.prior_mc_samples > 0
+        )
         n_keys = (
             (self.prior_mc_samples if need_mc else 0)
             + int(self.use_sinkhorn)
@@ -530,7 +539,9 @@ class NewtonWassersteinFlow(HellingerKantorovichFlow):
             kernel=kernel, prior=prior, step_size=step_size,
             wasserstein_weight=wasserstein_weight, sinkhorn_reg=sinkhorn_reg,
             use_sinkhorn=use_sinkhorn, prior_particles=prior_particles,
-            prior_flow_weight=0.0, prior_mc_samples=0,
+            prior_flow_weight=0.0,
+            use_prior_regularization=False,
+            prior_mc_samples=0,
             sinkhorn_num_iters=sinkhorn_num_iters, atom_noise_std=atom_noise_std,
             resample=False,  # weights-fixed flow: no Hellinger step, no resampling
         )
