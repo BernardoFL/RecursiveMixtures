@@ -1,20 +1,19 @@
 #!/usr/bin/env python3
 """
-Mode Recovery and Metastability Experiment.
+Cat-paw HK metastability experiment.
 
-This script compares the Hellinger–Kantorovich (HK) splitting scheme,
-Newton–Hellinger, and Newton flows on a dumbbell-like target: a weakly
-connected Gaussian mixture with two main lobes linked by a low-density
-bridge. Elapsed times are reported and density plots show how each flow
-approximates the target.
+Simulates n i.i.d. points from the paw mixture, then runs three
+Hellinger–Kantorovich (HK) flows from the same initial particles on the same
+dataset: (a) n steps with Fisher–Rao prior regularization on, (b) n steps with
+it off, (c) n+k steps with prior on and uniform resampling from the data after
+the first n observations. Plots true density + data + final particles.
 """
 
 from __future__ import annotations
 
 import argparse
-import sys
 import time
-from typing import Dict, List, Tuple
+from typing import Dict, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -28,163 +27,23 @@ from recursive_mixtures import (
     GaussianPrior,
     DirichletProcessPrior,
     HellingerKantorovichFlow,
-    NewtonFlow,
 )
 from recursive_mixtures.utils import generate_mixture_data, true_mixture_density
 
 from paw_distribution import PawDistribution
 
 
-# -----------------------------------------------------------------------------
-# Banana-shaped mixture: log-density, score, sampling
-# Using base banana from https://tiao.io/post/building-probability-distributions-with-tensorflow-probability-bijector-api/
-# -----------------------------------------------------------------------------
-
-_BANANA_RHO = 0.95
-_BANANA_DET = 1.0 - _BANANA_RHO**2
-_BANANA_INV = (1.0 / _BANANA_DET) * jnp.array(
-    [[1.0, -_BANANA_RHO], [-_BANANA_RHO, 1.0]]
-)
-_BANANA_LOG_NORM = -0.5 * (
-    2.0 * jnp.log(2.0 * jnp.pi) + jnp.log(_BANANA_DET)
-)
-
-
-def _banana_base_log_density_x(x: jax.Array) -> jax.Array:
-    """Log density of base correlated Gaussian N(0, Σ) with ρ=0.95, for a single 2D point x."""
-    x = jnp.atleast_1d(x)
-    dx = x  # mean zero
-    quad = dx @ _BANANA_INV @ dx
-    return _BANANA_LOG_NORM - 0.5 * quad
-
-
-def _banana_component_log_density_single(y: jax.Array, center: jax.Array) -> jax.Array:
-    """
-    Log density of one banana component at a single 2D point y.
-
-    Component is constructed as:
-        x ~ N(0, Σ)
-        z = G(x) with G(x) = [x1, x2 - x1^2 - 1]
-        y = z + center
-    Since G is volume-preserving, p_Y(y) = p_X(G^{-1}(y - center)).
-    """
-    # Shift by component center
-    z = y - center
-    # Inverse transform G^{-1}(z)
-    x1 = z[0]
-    x2 = z[1] + x1**2 + 1.0
-    x = jnp.stack([x1, x2])
-    return _banana_base_log_density_x(x)
-
-
-def banana_component_log_density(
-    y: jax.Array,
-    c1: jax.Array,
-    c2: jax.Array,
-    b: jax.Array,
-    s1: jax.Array,
-    s2: jax.Array,
-) -> jax.Array:
-    """
-    Log density of one banana component. y shape (2,) or (N, 2); returns scalar or (N,).
-
-    The extra parameters (b, s1, s2) are unused here but kept for interface compatibility.
-    """
-    center = jnp.array([c1, c2])
-    y = jnp.atleast_2d(y)
-    return jax.vmap(lambda yi: _banana_component_log_density_single(yi, center))(y).squeeze()
-
-
-def banana_mixture_log_density(
-    y: jax.Array,
-    centers: jax.Array,
-    curvatures: jax.Array,
-    scales: jax.Array,
-    weights: jax.Array,
-) -> jax.Array:
-    """
-    Log of mixture density: log(sum_k w_k p_k(y)).
-    centers (K, 2), weights (K). Other arguments are ignored for this banana construction.
-    """
-    y = jnp.atleast_2d(y)
-    K = centers.shape[0]
-    log_components = jnp.stack(
-        [
-            jax.vmap(
-                lambda yi: _banana_component_log_density_single(yi, centers[k])
-            )(y)
-            for k in range(K)
-        ],
-        axis=0,
-    )  # (K, N)
-    log_weighted = jnp.log(weights + 1e-30)[:, None] + log_components
-    return jax.scipy.special.logsumexp(log_weighted, axis=0).squeeze()
-
-
-def banana_mixture_sample(
-    key: jax.Array,
-    n: int,
-    centers: jax.Array,
-    curvatures: jax.Array,
-    scales: jax.Array,
-    weights: jax.Array,
-) -> jax.Array:
-    """
-    Sample n points from the banana mixture.
-
-    For each component:
-        x ~ N(0, Σ) with ρ=0.95,
-        z = G(x) = [x1, x2 - x1^2 - 1],
-        y = z + center_k.
-    """
-    K = centers.shape[0]
-    key_comp, key_base = jr.split(key, 2)
-    # Component assignments
-    comp = jr.choice(key_comp, K, shape=(n,), p=weights)
-    # Base Gaussian samples
-    Sigma = jnp.array([[1.0, _BANANA_RHO], [_BANANA_RHO, 1.0]])
-    L = jnp.linalg.cholesky(Sigma)
-    base = jr.normal(key_base, shape=(n, 2))
-    x = base @ L.T  # (n, 2)
-    x1 = x[:, 0]
-    x2 = x[:, 1]
-    z1 = x1
-    z2 = x2 - x1**2 - 1.0
-    z = jnp.stack([z1, z2], axis=1)
-    # Shift by component centers
-    c = centers[comp]
-    y = z + c
-    return y
-
-
-def banana_mixture_score(
-    x: jax.Array,
-    centers: jax.Array,
-    curvatures: jax.Array,
-    scales: jax.Array,
-    weights: jax.Array,
-) -> jax.Array:
-    """Gradient of log mixture density; x shape (2,) or (N, 2)."""
-    def log_dens(xi):
-        return banana_mixture_log_density(xi, centers, curvatures, scales, weights)
-    grad_fn = jax.grad(log_dens)
-    x = jnp.atleast_2d(x)
-    return jax.vmap(grad_fn)(x).squeeze()
-
-
 def setup_config() -> Dict:
-    """Configuration dictionary for the metastability experiment (cat-paw mixture)."""
+    """Configuration for paw HK comparison (n samples, k continuation steps)."""
     paw = PawDistribution()
     paw_params = paw.to_dict()
-    config = {
+    return {
         "dumbbell_means": jnp.array(paw_params["means"]),
         "dumbbell_stds": jnp.array(paw_params["stds"]),
         "dumbbell_weights": jnp.array(paw_params["weights"]),
-        # Data
         "n_data": 1000,
-        # Particles (match fast bootstrap settings)
+        "k": 1000,
         "n_particles": 50,
-        # HK flow parameters
         "hk_step_size": 0.01,
         "hk_kernel_bandwidth": 0.4,
         "hk_sinkhorn_reg": 0.05,
@@ -192,21 +51,15 @@ def setup_config() -> Dict:
         "hk_wasserstein_weight": 0.03,
         "hk_prior_flow_weight": 0.1,
         "hk_prior_mc_samples": 1,
-        # Prior for HK flow
+        "hk_use_prior_regularization": True,
         "prior_mean": jnp.array([0.0, 0.0]),
         "prior_std": 5.0,
         "dp_concentration": 10.0,
-        # Trajectory recording
-        "n_steps": 100,
-        "record_every": 20,
-        # Density grid — tight enough to show the cat paw clearly
         "grid_min": -2.5,
-        "grid_max":  2.5,
+        "grid_max": 2.5,
         "grid_size": 80,
-        # Random seed
         "seed": 2024,
     }
-    return config
 
 
 def generate_dumbbell_data(key: jax.Array, config: Dict) -> jax.Array:
@@ -226,9 +79,16 @@ def make_hk_flow_for_metastability(
     kernel,
     prior_particles: ParticleMeasure,
     config: Dict,
+    *,
+    use_prior_regularization: bool | None = None,
 ) -> HellingerKantorovichFlow:
-    """Configure an HK flow emphasizing teleportation between modes."""
-    flow = HellingerKantorovichFlow(
+    """HK flow; Fisher–Rao prior term controlled by use_prior_regularization."""
+    upr = (
+        use_prior_regularization
+        if use_prior_regularization is not None
+        else config.get("hk_use_prior_regularization", True)
+    )
+    return HellingerKantorovichFlow(
         kernel=kernel,
         prior=prior,
         step_size=config["hk_step_size"],
@@ -238,135 +98,45 @@ def make_hk_flow_for_metastability(
         use_sinkhorn=True,
         prior_particles=prior_particles,
         prior_flow_weight=config["hk_prior_flow_weight"],
+        use_prior_regularization=upr,
         prior_mc_samples=config["hk_prior_mc_samples"],
     )
-    return flow
 
 
-def make_newton_weights_flow_for_metastability(
-    prior,
-    kernel,
-    config: Dict,
-) -> NewtonFlow:
-    """Configure a Newton flow (weights only, fixed atoms)."""
-    return NewtonFlow(
-        kernel=kernel,
-        prior=prior,
-        step_size=config["hk_step_size"],
-    )
-
-
-def make_newton_wasserstein_flow_for_metastability(
-    prior,
-    kernel,
-    prior_particles: ParticleMeasure,
-    config: Dict,
-) -> NewtonFlow:
-    """Configure a Newton flow (weights only, fixed atoms)."""
-    return NewtonFlow(
-        kernel=kernel,
-        prior=prior,
-        step_size=config["hk_step_size"],
-    )
-
-
-def run_hk_splitting(
+def run_hk_case(
     key: jax.Array,
     initial_measure: ParticleMeasure,
-    data_stream: jax.Array,
+    data: jax.Array,
     prior,
     kernel,
     prior_particles: ParticleMeasure,
     config: Dict,
-) -> Tuple[ParticleMeasure, List[jax.Array]]:
-    """
-    Run the HK splitting flow on the galaxy data, recording trajectories.
-
-    We use the existing HK flow implementation with the corrected
-    Hellinger step and Sinkhorn regularization toward the prior.
-    """
-    flow = make_hk_flow_for_metastability(prior, kernel, prior_particles, config)
-
-    measure = initial_measure
-    traj_snapshots: List[jax.Array] = [measure.atoms]
-
-    n_steps = config["n_steps"]
-    record_every = config["record_every"]
-    data_len = int(data_stream.shape[0])
-
-    # First pass uses each point in order; beyond n, sample with replacement.
-    if n_steps <= data_len:
-        step_indices = jnp.arange(n_steps)
-    else:
-        n_extra = n_steps - data_len
-        key, idx_key = jr.split(key)
-        extra_idx = jr.randint(idx_key, shape=(n_extra,), minval=0, maxval=data_len)
-        step_indices = jnp.concatenate([jnp.arange(data_len), extra_idx], axis=0)
-    keys = jr.split(key, n_steps)
-
-    # Simple text progress bar for HK splitting
-    bar_width = 30
-
-    for t in range(n_steps):
-        x = data_stream[step_indices[t]]
-        measure = flow.step(measure, x, keys[t])
-        if (t + 1) % record_every == 0:
-            traj_snapshots.append(measure.atoms)
-
-        # Update progress bar
-        progress = (t + 1) / n_steps
-        filled = int(bar_width * progress)
-        bar = "#" * filled + "-" * (bar_width - filled)
-        msg = f"\rHK splitting [{bar}] {t + 1}/{n_steps}"
-        sys.stdout.write(msg)
-        sys.stdout.flush()
-
-    # Finish progress bar line
-    sys.stdout.write("\n")
-    sys.stdout.flush()
-
-    return measure, traj_snapshots
-
-
-def assign_modes(points: jax.Array, means: jax.Array) -> jax.Array:
-    """
-    Assign each point to the nearest mixture component by Euclidean distance.
-
-    Args:
-        points: shape (N, 2)
-        means: shape (K, 2)
-
-    Returns:
-        mode_indices: shape (N,) with values in {0, ..., K-1}
-    """
-    # points -> (N, 1, 2), means -> (1, K, 2)
-    diff = points[:, None, :] - means[None, :, :]
-    sq_dist = jnp.sum(diff ** 2, axis=-1)  # (N, K)
-    return jnp.argmin(sq_dist, axis=1)
-
-
-def mode_occupancy(
-    snapshots: List[jax.Array],
-    means: jax.Array,
-) -> np.ndarray:
-    """
-    Compute mode occupancy fractions over time for a list of snapshots.
-
-    Returns:
-        occupancy: array of shape (T_snap, K)
-    """
-    K = means.shape[0]
-    occ_list = []
-    for atoms in snapshots:
-        modes = assign_modes(atoms, means)
-        counts = jnp.bincount(modes, length=K)
-        occ = counts / jnp.sum(counts)
-        occ_list.append(np.asarray(occ))
-    return np.stack(occ_list, axis=0)
+    *,
+    n_steps: int,
+    bootstrap_after_data: bool,
+    use_prior_regularization: bool,
+) -> ParticleMeasure:
+    """Run HK for n_steps using GradientFlow.run (ordered prefix + optional continuation)."""
+    flow = make_hk_flow_for_metastability(
+        prior,
+        kernel,
+        prior_particles,
+        config,
+        use_prior_regularization=use_prior_regularization,
+    )
+    final_measure, _ = flow.run(
+        initial_measure,
+        data,
+        key=key,
+        store_every=max(1, int(n_steps)),
+        n_steps=int(n_steps),
+        bootstrap_after_data=bootstrap_after_data,
+    )
+    return final_measure
 
 
 def build_density_background(config: Dict) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Precompute dumbbell mixture density on a grid for background plotting."""
+    """True paw mixture density on a grid for plotting."""
     n = config["grid_size"]
     xs = jnp.linspace(config["grid_min"], config["grid_max"], n)
     ys = jnp.linspace(config["grid_min"], config["grid_max"], n)
@@ -386,30 +156,30 @@ def build_density_background(config: Dict) -> Tuple[np.ndarray, np.ndarray, np.n
     )
 
 
-def plot_particles(
+def plot_paw_hk_panels(
     config: Dict,
     true_grid: np.ndarray,
-    hk_measure: ParticleMeasure,
-    nh_measure: ParticleMeasure,
-    nw_measure: ParticleMeasure,
-    initial_measure: ParticleMeasure,
-):
-    """
-    Three-panel scatter plot: one panel per flow.
-    Each panel shows the true density heatmap and final particle positions
-    sized by weight.
-    """
-    extent = [config["grid_min"], config["grid_max"], config["grid_min"], config["grid_max"]]
-
-    flows = [
-        ("Wasserstein-Fisher-Rao", hk_measure, "teal"),
-        ("Fisher-Rao", nh_measure, "royalblue"),
-        ("Newton", nw_measure, "crimson"),
+    data: jax.Array,
+    measure_a: ParticleMeasure,
+    measure_b: ParticleMeasure,
+    measure_c: ParticleMeasure,
+    out_path: str = "paw_hk_comparison.pdf",
+) -> None:
+    """Heatmap of true density + data scatter + particles (marker size ∝ weight)."""
+    extent = [
+        config["grid_min"],
+        config["grid_max"],
+        config["grid_min"],
+        config["grid_max"],
     ]
-
+    data_np = np.asarray(data)
+    panels = [
+        ("Prior on, stop at n", measure_a, "teal"),
+        ("Prior off, stop at n", measure_b, "royalblue"),
+        ("Prior on, n+k (resample)", measure_c, "crimson"),
+    ]
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-
-    for ax, (label, measure, color) in zip(axes, flows):
+    for ax, (title, measure, color) in zip(axes, panels):
         ax.imshow(
             true_grid,
             origin="lower",
@@ -417,70 +187,68 @@ def plot_particles(
             aspect="auto",
             cmap="gray_r",
         )
-
+        ax.scatter(
+            data_np[:, 0],
+            data_np[:, 1],
+            s=14,
+            c="white",
+            edgecolors="black",
+            linewidths=0.35,
+            alpha=0.75,
+            zorder=2,
+        )
         atoms = np.asarray(measure.atoms)
         weights = np.asarray(measure.weights)
-        sizes = weights / weights.max() * 300
-
+        wmax = float(weights.max())
+        sizes = weights / max(wmax, 1e-12) * 300
         ax.scatter(
-            atoms[:, 0], atoms[:, 1],
-            s=sizes, c=color,
+            atoms[:, 0],
+            atoms[:, 1],
+            s=sizes,
+            c=color,
             alpha=0.85,
-            edgecolors="white", linewidths=0.4,
+            edgecolors="white",
+            linewidths=0.4,
             zorder=3,
         )
-
-        ax.set_title(label)
+        ax.set_title(title)
         ax.set_xlabel("x₁")
         ax.set_ylabel("x₂")
         ax.set_xlim(config["grid_min"], config["grid_max"])
         ax.set_ylim(config["grid_min"], config["grid_max"])
 
-    plt.suptitle("Final particle positions (size ∝ weight)", y=1.02)
+    plt.suptitle("Cat-paw HK: density, data, particles (size ∝ weight)", y=1.02)
     plt.tight_layout()
-    plt.savefig("metastability_density_comparison.pdf", bbox_inches="tight")
+    plt.savefig(out_path, bbox_inches="tight")
     plt.close(fig)
 
 
-def plot_mode_occupancy(config: Dict, occ_hk: np.ndarray):
-    """Plot mode occupancy over snapshots for HK flow."""
-    T_snap, K = occ_hk.shape
-    times = np.arange(T_snap) * config["record_every"]
-
-    fig, ax = plt.subplots(figsize=(7, 5))
-    for k in range(K):
-        ax.plot(times, occ_hk[:, k], label=f"Mode {k+1}")
-    ax.set_title("Mode occupancy - Wasserstein-Fisher-Rao")
-    ax.set_xlabel("Step")
-    ax.set_ylabel("Fraction of particles")
-    ax.legend(loc="best")
-    plt.tight_layout()
-    plt.savefig("mode_occupancy_over_time.pdf", bbox_inches="tight")
-    plt.close(fig)
-
-
-def main(n_steps: int | None = None):
+def main(n_data: int | None = None, k: int | None = None) -> None:
     config = setup_config()
-    if n_steps is not None:
-        if n_steps <= 0:
-            raise ValueError("--n-steps must be positive")
-        config["n_steps"] = int(n_steps)
+    if n_data is not None:
+        if n_data <= 0:
+            raise ValueError("--n-data must be positive")
+        config["n_data"] = int(n_data)
+    if k is not None:
+        if k < 0:
+            raise ValueError("--k must be non-negative")
+        config["k"] = int(k)
+
+    n = int(config["n_data"])
+    k_extra = int(config["k"])
 
     print("=" * 80)
-    print("Metastability Experiment: Cat-Paw Mixture — Wasserstein-Fisher-Rao vs Fisher-Rao vs Newton")
+    print("Cat-paw HK experiment: prior on/off and continuation")
+    print(f"  n = {n} data points, k = {k_extra} extra resampled steps (case c total = {n + k_extra})")
     print("=" * 80)
 
     key = jr.PRNGKey(config["seed"])
-
-    # Generate dumbbell mixture data
     key, data_key = jr.split(key)
     data = generate_dumbbell_data(data_key, config)
-    print(f"Generated {config['n_data']} observations from dumbbell mixture.")
+    print(f"Simulated {n} observations from paw mixture.")
 
-    # Background density for visualization (true density grid)
-    Xg, Yg, true_grid = build_density_background(config)
+    _, _, true_grid = build_density_background(config)
 
-    # Initial particles from prior
     base_prior = GaussianPrior(
         mean=config["prior_mean"],
         std=config["prior_std"],
@@ -492,138 +260,91 @@ def main(n_steps: int | None = None):
     )
     key, init_key, hk_prior_key = jr.split(key, 3)
     initial_atoms = prior.sample(init_key, config["n_particles"])
-
-    # HK splitting (single long run, with timing)
-    print("\nRunning HK splitting scheme...")
     kernel = GaussianKernel(bandwidth=config["hk_kernel_bandwidth"])
     prior_particles = prior.to_particle_measure(hk_prior_key, config["n_particles"])
     initial_measure = ParticleMeasure.initialize(initial_atoms)
-    key, hk_key, nh_key, nw_key = jr.split(key, 4)
 
-    t0_hk = time.perf_counter()
-    final_hk_measure, hk_snaps = run_hk_splitting(
-        hk_key,
+    key, ka, kb, kc = jr.split(key, 4)
+
+    print("\n(a) HK: prior on, n steps, ordered data...")
+    t0 = time.perf_counter()
+    m_a = run_hk_case(
+        ka,
         initial_measure,
         data,
         prior,
         kernel,
         prior_particles,
         config,
+        n_steps=n,
+        bootstrap_after_data=False,
+        use_prior_regularization=True,
     )
-    time_hk = time.perf_counter() - t0_hk
-    print(f"  HK splitting elapsed: {time_hk:.2f} s")
+    print(f"    elapsed {time.perf_counter() - t0:.2f} s")
 
-    # Newton flow (weights only, fixed atoms)
-    print("Running Newton flow (weights only)...")
-    nh_flow = make_newton_weights_flow_for_metastability(prior, kernel, config)
-    nh_measure = initial_measure
-    n_steps = config["n_steps"]
-    data_len = int(data.shape[0])
-    # Same data-index policy: first pass in order, then bootstrap with replacement.
-    if n_steps <= data_len:
-        step_indices = jnp.arange(n_steps)
-    else:
-        n_extra = n_steps - data_len
-        nh_key, nh_idx_key = jr.split(nh_key)
-        nh_extra_idx = jr.randint(nh_idx_key, shape=(n_extra,), minval=0, maxval=data_len)
-        step_indices = jnp.concatenate([jnp.arange(data_len), nh_extra_idx], axis=0)
-    nh_step_keys = jr.split(nh_key, n_steps)
-    t0_nh = time.perf_counter()
-    for t in range(n_steps):
-        x = data[step_indices[t]]
-        nh_measure = nh_flow.step(nh_measure, x, key=nh_step_keys[t])
-    time_nh = time.perf_counter() - t0_nh
-    print(f"  Newton flow (weights only) elapsed: {time_nh:.2f} s")
-
-    # Newton flow (recursive weights-only update with fixed atoms)
-    print("Running Newton flow (reference run)...")
-    nw_flow = make_newton_wasserstein_flow_for_metastability(
+    print("(b) HK: prior off, n steps, ordered data...")
+    t0 = time.perf_counter()
+    m_b = run_hk_case(
+        kb,
+        initial_measure,
+        data,
         prior,
         kernel,
         prior_particles,
         config,
+        n_steps=n,
+        bootstrap_after_data=False,
+        use_prior_regularization=False,
     )
-    nw_measure = initial_measure
-    if n_steps <= data_len:
-        step_indices_nw = jnp.arange(n_steps)
-    else:
-        n_extra = n_steps - data_len
-        nw_key, nw_idx_key = jr.split(nw_key)
-        nw_extra_idx = jr.randint(nw_idx_key, shape=(n_extra,), minval=0, maxval=data_len)
-        step_indices_nw = jnp.concatenate([jnp.arange(data_len), nw_extra_idx], axis=0)
-    nw_step_keys = jr.split(nw_key, n_steps)
-    t0_nw = time.perf_counter()
-    for t in range(n_steps):
-        x = data[step_indices_nw[t]]
-        nw_measure = nw_flow.step(nw_measure, x, key=nw_step_keys[t])
-    time_nw = time.perf_counter() - t0_nw
-    print(f"  Newton flow elapsed: {time_nw:.2f} s")
+    print(f"    elapsed {time.perf_counter() - t0:.2f} s")
 
-    # Atom movement diagnostics: confirms whether particles physically moved.
-    init_atoms_np = np.asarray(initial_measure.atoms)
-    hk_atoms_np = np.asarray(final_hk_measure.atoms)
-    nh_atoms_np = np.asarray(nh_measure.atoms)
-    nw_atoms_np = np.asarray(nw_measure.atoms)
-    hk_disp = np.linalg.norm(hk_atoms_np - init_atoms_np, axis=1)
-    nh_disp = np.linalg.norm(nh_atoms_np - init_atoms_np, axis=1)
-    nw_disp = np.linalg.norm(nw_atoms_np - init_atoms_np, axis=1)
-    print(
-        "Atom displacement (mean / max): "
-        f"HK={hk_disp.mean():.4f}/{hk_disp.max():.4f}, "
-        f"NewtonFlow(weights)={nh_disp.mean():.4f}/{nh_disp.max():.4f}, "
-        f"NewtonFlow={nw_disp.mean():.4f}/{nw_disp.max():.4f}"
-    )
-
-    # Mode occupancy (dumbbell means) for HK
-    dumbbell_means = config["dumbbell_means"]
-    print("Computing mode occupancy over time (HK)...")
-    occ_hk = mode_occupancy(hk_snaps, dumbbell_means)
-
-    # Plots: particle scatter and HK mode occupancy
-    print("Creating particle scatter and occupancy plots...")
-
-    # Final HK weights summary (for debugging)
-    log_w = np.asarray(final_hk_measure.log_weights)
-    w = np.exp(log_w - log_w.max()); w /= w.sum()
-    print(
-        "Final HK weights: "
-        f"min={w.min():.3e}, max={w.max():.3e}, "
-        f"mean={w.mean():.3e}"
-    )
-
-    plot_particles(
-        config,
-        true_grid,
-        final_hk_measure,
-        nh_measure,
-        nw_measure,
+    print(f"(c) HK: prior on, n+k steps (then resample from data), k={k_extra}...")
+    t0 = time.perf_counter()
+    m_c = run_hk_case(
+        kc,
         initial_measure,
+        data,
+        prior,
+        kernel,
+        prior_particles,
+        config,
+        n_steps=n + k_extra,
+        bootstrap_after_data=True,
+        use_prior_regularization=True,
     )
-    plot_mode_occupancy(config, occ_hk)
+    print(f"    elapsed {time.perf_counter() - t0:.2f} s")
 
-    # Timing summary
-    print("\n--- Elapsed times ---")
-    print(f"  HK splitting:     {time_hk:.2f} s")
-    print(f"  NewtonFlow(w):    {time_nh:.2f} s")
-    print(f"  Newton flow:      {time_nw:.2f} s")
-    print("\nSaved figures 'metastability_density_comparison.png' and 'mode_occupancy_over_time.png'.")
+    init_atoms_np = np.asarray(initial_measure.atoms)
+    for label, m in [("(a)", m_a), ("(b)", m_b), ("(c)", m_c)]:
+        disp = np.linalg.norm(np.asarray(m.atoms) - init_atoms_np, axis=1)
+        print(f"  Atom displacement {label}: mean={disp.mean():.4f}, max={disp.max():.4f}")
+
+    print("\nCreating plot...")
+    plot_paw_hk_panels(config, true_grid, data, m_a, m_b, m_c)
+    print("Saved 'paw_hk_comparison.pdf'.")
 
 
 if __name__ == "__main__":
-    # Enable 64-bit precision for numerical stability if available
     try:
         jax.config.update("jax_enable_x64", True)
     except Exception:
         pass
 
-    parser = argparse.ArgumentParser(description="Metastability flow comparison experiment")
+    parser = argparse.ArgumentParser(
+        description="Cat-paw HK: prior on/off and n+k continuation with resampling"
+    )
     parser.add_argument(
-        "--n-steps",
+        "--n-data",
         type=int,
         default=None,
-        help="Override number of flow steps (default uses config value).",
+        help="Dataset size n (default: 1000).",
+    )
+    parser.add_argument(
+        "--k",
+        type=int,
+        default=None,
+        help="Extra flow steps after ordered n (uniform resample from data); default 1000",
     )
     args = parser.parse_args()
 
-    main(n_steps=args.n_steps)
-
+    main(n_data=args.n_data, k=args.k)
