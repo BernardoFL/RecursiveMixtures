@@ -1,6 +1,6 @@
 # Bootstrap flow experiments (LLM-oriented reference)
 
-This document describes the two structured studies implemented in [`bootstrap_experiment.py`](bootstrap_experiment.py), plus how they differ from the **legacy** one-shot bootstrap visualization. Use this as context when modifying code or interpreting results.
+This document describes the two structured studies implemented in [`bootstrap_experiment.py`](bootstrap_experiment.py). Use this as context when modifying code or interpreting results.
 
 ## Problem setup
 
@@ -93,14 +93,6 @@ python bootstrap_experiment.py --study prior
 
 ---
 
-## Legacy mode (original script behavior)
-
-```bash
-python bootstrap_experiment.py --study legacy
-```
-
-Runs a **single** `n_data` from config, full bootstrap over HK / Newton–H / Newton–W, and saves **`bootstrap_hk_coverage.pdf`** (contour bands over the spatial grid).  
-Optional `--n-steps` applies to that legacy path when you want a fixed flow length / continuation.
 
 ---
 
@@ -114,7 +106,7 @@ Optional `--n-steps` applies to that legacy path when you want a fixed flow leng
 | `use_prior_regularization` | Default `True` in config; Study B overrides per arm |
 | `prior_flow_weight`, `prior_mc_samples` | Strength and MC draws for HK prior term when enabled |
 | `--full` | Heavier defaults (more data, replicates, Sinkhorn work) |
-| `--study` | `legacy` \| `truncation` \| `prior` \| `both` (default `both`) |
+| `--study` | `truncation` \| `prior` \| `both` (default `both`) |
 
 ---
 
@@ -124,7 +116,6 @@ Optional `--n-steps` applies to that legacy path when you want a fixed flow leng
 |------|---------|
 | `bootstrap_truncation_vs_continuation.pdf` | Study A |
 | `bootstrap_prior_regularization.pdf` | Study B |
-| `bootstrap_hk_coverage.pdf` | Legacy |
 
 ---
 

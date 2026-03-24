@@ -11,7 +11,6 @@ baseline.
 Studies (``--study``): **truncation** compares stopping after one data pass
 vs index continuation across sample sizes; **prior** compares HK with
 Fisher–Rao prior regularization on vs off (continuation for both).
-**legacy** reproduces the original single-run contour plot.
 """
 
 from __future__ import annotations
@@ -739,344 +738,22 @@ def run_study_prior_regularization(config: Dict, key: jax.Array) -> jax.Array:
     return key
 
 
-def plot_bootstrap_results(
-    config: Dict,
-    grid_points: jax.Array,
-    hk_mean: jax.Array,
-    hk_lower: jax.Array,
-    hk_upper: jax.Array,
-    nh_mean: jax.Array,
-    nh_lower: jax.Array,
-    nh_upper: jax.Array,
-    nw_mean: jax.Array,
-    nw_lower: jax.Array,
-    nw_upper: jax.Array,
-    true_density_vals: jax.Array,
-    data: jax.Array,
-):
-    """Three 2D plots: true density heatmaps with HK, Newton-H, and Newton-W contours.
-
-    Each panel shows:
-    - Background: true density as grayscale heatmap.
-    - HK flow: mean and 95% interval as teal contours (solid / dashed / dotted).
-    - Newton-H: mean and 95% interval as blue contours.
-    - Newton-W: mean and 95% interval as red contours.
-    """
-    n = config["grid_size"]
-
-    def reshape(field: jax.Array) -> np.ndarray:
-        return np.asarray(field).reshape(n, n)
-
-    X = np.linspace(config["grid_min"], config["grid_max"], n)
-    Y = np.linspace(config["grid_min"], config["grid_max"], n)
-
-    true_grid = reshape(true_density_vals)
-    hk_mean_grid = reshape(hk_mean)
-    hk_lower_grid = reshape(hk_lower)
-    hk_upper_grid = reshape(hk_upper)
-    nh_mean_grid = reshape(nh_mean)
-    nh_lower_grid = reshape(nh_lower)
-    nh_upper_grid = reshape(nh_upper)
-    nw_mean_grid = reshape(nw_mean)
-    nw_lower_grid = reshape(nw_lower)
-    nw_upper_grid = reshape(nw_upper)
-
-    extent = [config["grid_min"], config["grid_max"], config["grid_min"], config["grid_max"]]
-
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
-
-    # Contour levels (use HK/NR grids for scale)
-    levels_hk = np.linspace(hk_mean_grid.min(), hk_mean_grid.max(), 8)
-    levels_nh = np.linspace(nh_mean_grid.min(), nh_mean_grid.max(), 8)
-    levels_nw = np.linspace(nw_mean_grid.min(), nw_mean_grid.max(), 8)
-
-    # Left: lower credible bands (HK vs Newton-H vs Newton-W)
-    ax_left = axes[0]
-    im_left = ax_left.imshow(
-        true_grid,
-        origin="lower",
-        extent=extent,
-        aspect="auto",
-        cmap="gray_r",
-    )
-    # HK lower band (teal)
-    ax_left.contour(
-        X,
-        Y,
-        hk_lower_grid,
-        levels=levels_hk,
-        colors="teal",
-        linewidths=1.2,
-        linestyles="solid",
-    )
-    # Newton-H lower band (blue)
-    ax_left.contour(
-        X,
-        Y,
-        nh_lower_grid,
-        levels=levels_nh,
-        colors="royalblue",
-        linewidths=1.2,
-        linestyles="solid",
-    )
-    # Newton-W lower band (red)
-    ax_left.contour(
-        X,
-        Y,
-        nw_lower_grid,
-        levels=levels_nw,
-        colors="crimson",
-        linewidths=1.2,
-        linestyles="solid",
-    )
-    ax_left.set_title("Lower 95\\% bands")
-    ax_left.set_xlabel("x")
-    ax_left.set_ylabel("y")
-
-    # Middle: posterior means (HK vs Newton-H vs Newton-W)
-    ax_mid = axes[1]
-    im_mid = ax_mid.imshow(
-        true_grid,
-        origin="lower",
-        extent=extent,
-        aspect="auto",
-        cmap="gray_r",
-    )
-    # HK mean (teal)
-    ax_mid.contour(
-        X,
-        Y,
-        hk_mean_grid,
-        levels=levels_hk,
-        colors="teal",
-        linewidths=1.4,
-        linestyles="solid",
-    )
-    # Newton-H mean (blue)
-    ax_mid.contour(
-        X,
-        Y,
-        nh_mean_grid,
-        levels=levels_nh,
-        colors="royalblue",
-        linewidths=1.4,
-        linestyles="solid",
-    )
-    # Newton-W mean (red)
-    ax_mid.contour(
-        X,
-        Y,
-        nw_mean_grid,
-        levels=levels_nw,
-        colors="crimson",
-        linewidths=1.4,
-        linestyles="solid",
-    )
-    ax_mid.set_title("Posterior means")
-    ax_mid.set_xlabel("x")
-    ax_mid.set_ylabel("y")
-
-    # Right: upper credible bands (HK vs Newton-H vs Newton-W)
-    ax_right = axes[2]
-    im_right = ax_right.imshow(
-        true_grid,
-        origin="lower",
-        extent=extent,
-        aspect="auto",
-        cmap="gray_r",
-    )
-    # HK upper band (teal)
-    ax_right.contour(
-        X,
-        Y,
-        hk_upper_grid,
-        levels=levels_hk,
-        colors="teal",
-        linewidths=1.2,
-        linestyles="solid",
-    )
-    # Newton-H upper band (blue)
-    ax_right.contour(
-        X,
-        Y,
-        nh_upper_grid,
-        levels=levels_nh,
-        colors="royalblue",
-        linewidths=1.2,
-        linestyles="solid",
-    )
-    # Newton-W upper band (red)
-    ax_right.contour(
-        X,
-        Y,
-        nw_upper_grid,
-        levels=levels_nw,
-        colors="crimson",
-        linewidths=1.2,
-        linestyles="solid",
-    )
-    ax_right.set_title("Upper 95\\% bands")
-    ax_right.set_xlabel("x")
-    ax_right.set_ylabel("y")
-
-    plt.tight_layout()
-    plt.savefig("bootstrap_hk_coverage.pdf", bbox_inches="tight")
-    plt.close(fig)
-
-
-def run_legacy_experiment(
-    fast: bool = True,
-    n_steps: int | None = None,
-) -> None:
-    """Original single-grid bootstrap: one n_data, contour plot of credible bands."""
-    config = setup_config(fast=fast)
-    if n_steps is not None:
-        if n_steps <= 0:
-            raise ValueError("--n-steps must be positive")
-        config["n_steps"] = int(n_steps)
-
-    print("=" * 80)
-    print("Bootstrap HK Flow Experiment (Bivariate Mixture) [legacy]")
-    if fast:
-        print("(Fast mode: n_data=%d, B=%d, prior_mc_samples=%d, sinkhorn_num_iters=%d, MCMC off)"
-              % (config["n_data"], config["n_bootstrap"], config["prior_mc_samples"],
-                 config.get("sinkhorn_num_iters", 30)))
-    if config.get("n_steps") is not None:
-        print(f"(Flow run override: n_steps={config['n_steps']})")
-    print("=" * 80)
-
-    key = jr.PRNGKey(config["seed"])
-
-    # Generate data
-    key, data_key = jr.split(key)
-    data, _ = generate_bivariate_data(data_key, config)
-    print(f"Generated {config['n_data']} bivariate observations.")
-
-    # Prior and kernel
-    prior, kernel = make_prior_and_kernel(config)
-    key, pp_key = jr.split(key)
-    prior_particles = prior.to_particle_measure(pp_key, config["n_particles"])
-
-    # Bootstrap flows
-    B = config["n_bootstrap"]
-    hk_measures: List[ParticleMeasure] = []
-    nh_measures: List[ParticleMeasure] = []
-    nw_measures: List[ParticleMeasure] = []
-
-    print(f"\nRunning {B} bootstrap replicates for HK, Newton-H, and Newton-W flows...")
-    t_hk_start = time.perf_counter()
-    for b in range(B):
-        key, key_hk, key_nh, key_nw = jr.split(key, 4)
-
-        # HK replicate (weights + atoms)
-        m_hk = run_single_hk_replicate(
-            key_hk,
-            data,
-            prior,
-            kernel,
-            prior_particles,
-            config,
-        )
-        hk_measures.append(m_hk)
-
-        # Newton-H replicate (weights only)
-        m_nh = run_single_newton_h_replicate(
-            key_nh,
-            data,
-            prior,
-            kernel,
-            config,
-        )
-        nh_measures.append(m_nh)
-
-        # Newton-W replicate (atoms only)
-        m_nw = run_single_newton_w_replicate(
-            key_nw,
-            data,
-            prior,
-            kernel,
-            prior_particles,
-            config,
-        )
-        nw_measures.append(m_nw)
-
-        if (b + 1) % max(1, B // 4) == 0:
-            print(f"  Completed {b+1}/{B} replicates for all flows")
-    t_hk_end = time.perf_counter()
-
-    # Density grid
-    grid_points = build_density_grid(config)
-    hk_densities = hk_bootstrap_densities(hk_measures, kernel, grid_points)
-    nh_densities = hk_bootstrap_densities(nh_measures, kernel, grid_points)
-    nw_densities = hk_bootstrap_densities(nw_measures, kernel, grid_points)
-
-    hk_mean, hk_lower, hk_upper = credible_intervals(hk_densities, alpha=0.05)
-    nh_mean, nh_lower, nh_upper = credible_intervals(nh_densities, alpha=0.05)
-    nw_mean, nw_lower, nw_upper = credible_intervals(nw_densities, alpha=0.05)
-
-    # True density on grid
-    true_density_vals = true_mixture_density(
-        grid_points,
-        config["true_means"],
-        config["true_stds"],
-        config["true_weights"],
-    )
-
-    hk_coverage = compute_coverage(true_density_vals, hk_lower, hk_upper)
-    nh_coverage = compute_coverage(true_density_vals, nh_lower, nh_upper)
-    nw_coverage = compute_coverage(true_density_vals, nw_lower, nw_upper)
-    print(f"\nHK bootstrap 95% coverage (grid-based): {hk_coverage:.3f}")
-    print(f"Newton-H bootstrap 95% coverage (grid-based): {nh_coverage:.3f}")
-    print(f"Newton-W bootstrap 95% coverage (grid-based): {nw_coverage:.3f}")
-    print(f"Bootstrap elapsed time (all flows): {t_hk_end - t_hk_start:.2f} s")
-
-    # Plot results
-    plot_bootstrap_results(
-        config,
-        grid_points,
-        hk_mean,
-        hk_lower,
-        hk_upper,
-        nh_mean,
-        nh_lower,
-        nh_upper,
-        nw_mean,
-        nw_lower,
-        nw_upper,
-        true_density_vals,
-        data,
-    )
-    print("\nSaved figure 'bootstrap_hk_coverage.pdf'.")
 
 
 def main(
     fast: bool = True,
-    n_steps: int | None = None,
     study: str = "both",
     n_data_list: Optional[List[int]] = None,
     continuation_factor: float = 2.0,
 ) -> None:
-    """
-    study:
-      legacy    — original single n_data run + contour plot
-      truncation — Study A only (truncation vs continuation)
-      prior      — Study B only (HK prior on vs off)
-      both       — Study A then Study B (default)
-    """
+    """Run truncation/prior bootstrap studies (or both)."""
     config = setup_config(fast=fast)
-    if n_steps is not None:
-        if n_steps <= 0:
-            raise ValueError("--n-steps must be positive")
-        config["n_steps"] = int(n_steps)
     if n_data_list is not None:
         config["n_data_list"] = n_data_list
     config["continuation_factor"] = float(continuation_factor)
 
     key = jr.PRNGKey(config["seed"])
 
-    if study == "legacy":
-        run_legacy_experiment(fast=fast, n_steps=n_steps)
-        return
 
     if study in ("truncation", "both"):
         key = run_study_truncation_vs_continuation(config, key)
@@ -1099,17 +776,11 @@ if __name__ == "__main__":
         help="Run full (slower) configuration instead of fast mode.",
     )
     parser.add_argument(
-        "--n-steps",
-        type=int,
-        default=None,
-        help="Override flow run length (legacy study only); if > n_data, uses continuation.",
-    )
-    parser.add_argument(
         "--study",
         type=str,
-        choices=("legacy", "truncation", "prior", "both"),
+        choices=("truncation", "prior", "both"),
         default="both",
-        help="legacy=original contour plot; truncation|prior|both=new sample-size studies.",
+        help="truncation|prior|both sample-size studies.",
     )
     parser.add_argument(
         "--n-data-list",
@@ -1136,7 +807,6 @@ if __name__ == "__main__":
 
     main(
         fast=not args.full,
-        n_steps=args.n_steps,
         study=args.study,
         n_data_list=nd_list,
         continuation_factor=cont_factor,
