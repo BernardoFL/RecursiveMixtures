@@ -6,15 +6,14 @@ Simulates n i.i.d. points from the paw mixture, then runs three
 Hellinger–Kantorovich (HK) flows from the same initial particles on the same
 dataset: (a) n steps with Fisher–Rao prior regularization on, (b) n steps with
 it off, (c) n+k steps with prior on and uniform resampling from the data after
-the first n observations. Plots true density + data + final particles (three
-panels by default, or one overlay per n when ``--n-data-list`` is used).
+the first n observations. Plots true density + data + final particles.
 """
 
 from __future__ import annotations
 
 import argparse
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -224,89 +223,30 @@ def plot_paw_hk_panels(
     plt.close(fig)
 
 
-def plot_paw_hk_overlay(
-    config: Dict,
-    true_grid: np.ndarray,
-    data: jax.Array,
-    measure_a: ParticleMeasure,
-    measure_b: ParticleMeasure,
-    measure_c: ParticleMeasure,
-    out_path: str,
-) -> None:
-    """Single axes: true density + data + all three particle sets (colors distinguish cases)."""
-    extent = [
-        config["grid_min"],
-        config["grid_max"],
-        config["grid_min"],
-        config["grid_max"],
-    ]
-    data_np = np.asarray(data)
-    n = int(config["n_data"])
-    k_extra = int(config["k"])
-    fig, ax = plt.subplots(figsize=(8, 7))
-    ax.imshow(
-        true_grid,
-        origin="lower",
-        extent=extent,
-        aspect="auto",
-        cmap="gray_r",
-    )
-    ax.scatter(
-        data_np[:, 0],
-        data_np[:, 1],
-        s=14,
-        c="white",
-        edgecolors="black",
-        linewidths=0.35,
-        alpha=0.75,
-        zorder=2,
-        label="Data",
-    )
-    series = [
-        (measure_a, "teal", "(a) Prior on, stop at n"),
-        (measure_b, "royalblue", "(b) Prior off, stop at n"),
-        (measure_c, "crimson", f"(c) Prior on, n+k (k={k_extra})"),
-    ]
-    for measure, color, label in series:
-        atoms = np.asarray(measure.atoms)
-        weights = np.asarray(measure.weights)
-        wmax = float(weights.max())
-        sizes = weights / max(wmax, 1e-12) * 280
-        ax.scatter(
-            atoms[:, 0],
-            atoms[:, 1],
-            s=sizes,
-            c=color,
-            alpha=0.78,
-            edgecolors="white",
-            linewidths=0.35,
-            zorder=3,
-            label=label,
-        )
-    ax.set_xlabel("x₁")
-    ax.set_ylabel("x₂")
-    ax.set_xlim(config["grid_min"], config["grid_max"])
-    ax.set_ylim(config["grid_min"], config["grid_max"])
-    ax.set_title(f"Cat-paw HK overlay (n = {n})")
-    ax.legend(loc="best", fontsize=8)
-    plt.tight_layout()
-    plt.savefig(out_path, bbox_inches="tight")
-    plt.close(fig)
+def main(n_data: int | None = None, k: int | None = None) -> None:
+    config = setup_config()
+    if n_data is not None:
+        if n_data <= 0:
+            raise ValueError("--n-data must be positive")
+        config["n_data"] = int(n_data)
+    if k is not None:
+        if k < 0:
+            raise ValueError("--k must be non-negative")
+        config["k"] = int(k)
 
-
-def run_paw_hk_triple(
-    key: jax.Array,
-    config: Dict,
-) -> Tuple[jax.Array, jax.Array, np.ndarray, ParticleMeasure, ParticleMeasure, ParticleMeasure, ParticleMeasure]:
-    """
-    One dataset of size config['n_data'], one init, three HK runs.
-    Returns (key, data, true_grid, initial_measure, m_a, m_b, m_c).
-    """
     n = int(config["n_data"])
     k_extra = int(config["k"])
 
+    print("=" * 80)
+    print("Cat-paw HK experiment: prior on/off and continuation")
+    print(f"  n = {n} data points, k = {k_extra} extra resampled steps (case c total = {n + k_extra})")
+    print("=" * 80)
+
+    key = jr.PRNGKey(config["seed"])
     key, data_key = jr.split(key)
     data = generate_dumbbell_data(data_key, config)
+    print(f"Simulated {n} observations from paw mixture.")
+
     _, _, true_grid = build_density_background(config)
 
     base_prior = GaussianPrior(
@@ -326,6 +266,8 @@ def run_paw_hk_triple(
 
     key, ka, kb, kc = jr.split(key, 4)
 
+    print("\n(a) HK: prior on, n steps, ordered data...")
+    t0 = time.perf_counter()
     m_a = run_hk_case(
         ka,
         initial_measure,
@@ -338,6 +280,10 @@ def run_paw_hk_triple(
         bootstrap_after_data=False,
         use_prior_regularization=True,
     )
+    print(f"    elapsed {time.perf_counter() - t0:.2f} s")
+
+    print("(b) HK: prior off, n steps, ordered data...")
+    t0 = time.perf_counter()
     m_b = run_hk_case(
         kb,
         initial_measure,
@@ -350,6 +296,10 @@ def run_paw_hk_triple(
         bootstrap_after_data=False,
         use_prior_regularization=False,
     )
+    print(f"    elapsed {time.perf_counter() - t0:.2f} s")
+
+    print(f"(c) HK: prior on, n+k steps (then resample from data), k={k_extra}...")
+    t0 = time.perf_counter()
     m_c = run_hk_case(
         kc,
         initial_measure,
@@ -362,69 +312,7 @@ def run_paw_hk_triple(
         bootstrap_after_data=True,
         use_prior_regularization=True,
     )
-    return key, data, true_grid, initial_measure, m_a, m_b, m_c
-
-
-def main(
-    n_data: int | None = None,
-    k: int | None = None,
-    n_data_list: Optional[List[int]] = None,
-) -> None:
-    config = setup_config()
-    if k is not None:
-        if k < 0:
-            raise ValueError("--k must be non-negative")
-        config["k"] = int(k)
-
-    if n_data_list is not None:
-        if not n_data_list:
-            raise ValueError("--n-data-list must contain at least one integer")
-        for n in n_data_list:
-            if n <= 0:
-                raise ValueError("Each n in --n-data-list must be positive")
-
-        print("=" * 80)
-        print("Cat-paw HK experiment: sweep n_data_list (overlay plot per n)")
-        print(f"  n values: {n_data_list}, k = {config['k']}")
-        print("=" * 80)
-
-        key = jr.PRNGKey(config["seed"])
-        for n in n_data_list:
-            cfg = dict(config)
-            cfg["n_data"] = int(n)
-            print(f"\n--- n = {n} ---")
-            t0 = time.perf_counter()
-            key, data, true_grid, init_m, m_a, m_b, m_c = run_paw_hk_triple(key, cfg)
-            print(f"  Triple HK run elapsed {time.perf_counter() - t0:.2f} s")
-            init_atoms_np = np.asarray(init_m.atoms)
-            for label, m in [("(a)", m_a), ("(b)", m_b), ("(c)", m_c)]:
-                disp = np.linalg.norm(np.asarray(m.atoms) - init_atoms_np, axis=1)
-                print(
-                    f"  Atom displacement {label}: mean={disp.mean():.4f}, max={disp.max():.4f}"
-                )
-            out = f"paw_hk_overlay_n{n}.pdf"
-            plot_paw_hk_overlay(cfg, true_grid, data, m_a, m_b, m_c, out)
-            print(f"  Saved '{out}'")
-        return
-
-    if n_data is not None:
-        if n_data <= 0:
-            raise ValueError("--n-data must be positive")
-        config["n_data"] = int(n_data)
-
-    n = int(config["n_data"])
-    k_extra = int(config["k"])
-
-    print("=" * 80)
-    print("Cat-paw HK experiment: prior on/off and continuation")
-    print(f"  n = {n} data points, k = {k_extra} extra resampled steps (case c total = {n + k_extra})")
-    print("=" * 80)
-
-    key = jr.PRNGKey(config["seed"])
-    print("\nRunning (a)(b)(c)...")
-    t0 = time.perf_counter()
-    key, data, true_grid, initial_measure, m_a, m_b, m_c = run_paw_hk_triple(key, config)
-    print(f"  Total elapsed {time.perf_counter() - t0:.2f} s")
+    print(f"    elapsed {time.perf_counter() - t0:.2f} s")
 
     init_atoms_np = np.asarray(initial_measure.atoms)
     for label, m in [("(a)", m_a), ("(b)", m_b), ("(c)", m_c)]:
@@ -457,16 +345,6 @@ if __name__ == "__main__":
         default=None,
         help="Extra flow steps after ordered n (uniform resample from data); default 1000",
     )
-    parser.add_argument(
-        "--n-data-list",
-        type=str,
-        default=None,
-        help="Comma-separated n values: repeat experiment per n and save paw_hk_overlay_n{n}.pdf",
-    )
     args = parser.parse_args()
 
-    nd_list: Optional[List[int]] = None
-    if args.n_data_list:
-        nd_list = [int(x.strip()) for x in args.n_data_list.split(",") if x.strip()]
-
-    main(n_data=args.n_data, k=args.k, n_data_list=nd_list)
+    main(n_data=args.n_data, k=args.k)

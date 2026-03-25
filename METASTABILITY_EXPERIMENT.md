@@ -1,6 +1,6 @@
 # Metastability experiment (LLM-oriented reference)
 
-This document describes [`metastability_experiment.py`](metastability_experiment.py) as of the **paw HK** redesign: one simulated dataset from the cat-paw mixture and **three** `HellingerKantorovichFlow` runs, then either a **three-panel** figure (default) or, when sweeping sample sizes, **one overlay figure per n**.
+This document describes [`metastability_experiment.py`](metastability_experiment.py) as of the **paw HK** redesign: one simulated dataset from the cat-paw mixture and **three** `HellingerKantorovichFlow` runs, then a single three-panel figure.
 
 ## Goal
 
@@ -33,10 +33,7 @@ Default **k = 1000** (large; reduce with `--k` for testing).
 
 | File | Content |
 |------|---------|
-| `paw_hk_comparison.pdf` | **Single-n mode:** three panels — true density heatmap, **data** scatter (small markers), final **particles** (size ∝ weight) for (a), (b), (c). |
-| `paw_hk_overlay_n{n}.pdf` | **`--n-data-list` mode:** one axes per requested **n** — same heatmap and data, all three particle sets overlaid (teal / royalblue / crimson) with a legend. |
-
-If both `--n-data` and `--n-data-list` are passed, **`--n-data-list` takes precedence** (the single-`n` options are ignored).
+| `paw_hk_comparison.pdf` | Three panels: true density heatmap, **data** scatter (small markers), final **particles** (size ∝ weight) for (a), (b), (c). |
 
 ## How to run
 
@@ -50,17 +47,12 @@ Optional:
 python metastability_experiment.py --n-data 500 --k 100
 ```
 
-Sweep several sample sizes (one overlay PDF per **n**):
-
-```bash
-python metastability_experiment.py --n-data-list 200,500,1000 --k 200
-```
-
-- **`--n-data`** — sample size **n** (ignored when `--n-data-list` is set).
-- **`--n-data-list`** — comma-separated **n** values; repeats the full (a)(b)(c) procedure for each and writes `paw_hk_overlay_n{n}.pdf`.
+- **`--n-data`** — sample size **n**.
 - **`--k`** — extra resampled steps after the ordered pass (case **c** uses **n + k** total steps).
 
 Case **(c)** with default **k = 1000** performs many Sinkhorn-heavy steps; use smaller `--k` for interactive runs.
+
+**Overlay sweep over several sample sizes** (one combined plot per **n**) lives in [`bootstrap_experiment.py`](bootstrap_experiment.py): `python bootstrap_experiment.py --study paw --n-data-list 200,500,1000 --k 200` writes `paw_hk_overlay_n{n}.pdf`. See [`BOOTSTRAP_EXPERIMENTS.md`](BOOTSTRAP_EXPERIMENTS.md) Study C.
 
 ## Related code
 

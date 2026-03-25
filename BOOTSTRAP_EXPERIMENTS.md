@@ -1,6 +1,6 @@
 # Bootstrap flow experiments (LLM-oriented reference)
 
-This document describes the two structured studies implemented in [`bootstrap_experiment.py`](bootstrap_experiment.py). Use this as context when modifying code or interpreting results.
+This document describes the structured studies in [`bootstrap_experiment.py`](bootstrap_experiment.py): **A** and **B** use the bivariate Gaussian mixture and Bayesian bootstrap; **C (paw)** is a separate cat-paw HK comparison (same script, different target and no per-replicate bootstrap resampling).
 
 ## Problem setup
 
@@ -93,6 +93,36 @@ python bootstrap_experiment.py --study prior
 
 ---
 
+## Study C: Cat-paw HK triple (``--study paw``)
+
+**Goal:** Same as the standalone [`metastability_experiment.py`](metastability_experiment.py) **paw HK** setup: **one** i.i.d. dataset from the **seven-component cat paw** mixture, **one** DP-based initial particle measure, then **three** HK runs on that fixed data:
+
+1. **(a)** **n** ordered steps, Fisher–Rao prior regularization **on**.
+2. **(b)** **n** ordered steps, prior regularization **off** (Sinkhorn atom drift unchanged).
+3. **(c)** **n + k** steps, prior **on**, with **uniform resampling** from the data after the first **n** observations (`bootstrap_after_data=True`).
+
+This path **does not** use the Bayesian bootstrap replicates from Studies A/B; it only shares the script entry point.
+
+### Output
+
+| File | When |
+|------|------|
+| `paw_hk_comparison.pdf` | Single **n** (default or `--n-data`): three panels (density + data + particles per case). |
+| `paw_hk_overlay_n{n}.pdf` | `--n-data-list n1,n2,...`: one **overlay** figure per **n** (all three particle sets on one heatmap). |
+
+If both `--n-data` and `--n-data-list` are passed, **`--n-data-list` wins** (overlay sweep only).
+
+### CLI
+
+```bash
+python bootstrap_experiment.py --study paw
+python bootstrap_experiment.py --study paw --n-data 500 --k 100
+python bootstrap_experiment.py --study paw --n-data-list 200,500,1000 --k 200
+```
+
+- **`--n-data`** — sample size **n** (paw study only).
+- **`--k`** — extra resampled steps for case **(c)** (paw study only).
+- **`--n-data-list`** — for **paw**, comma-separated **n** values → overlay PDFs; for Studies A/B, sample sizes for coverage curves (unchanged).
 
 ---
 
@@ -100,13 +130,14 @@ python bootstrap_experiment.py --study prior
 
 | Key / flag | Role |
 |------------|------|
-| `n_data_list` / `--n-data-list` | Sample sizes for Studies A and B |
-| `continuation_factor` / `--continuation-factor` | Continuation length multiplier |
+| `n_data_list` / `--n-data-list` | Sample sizes for Studies A and B; for **paw**, overlay sweep |
+| `continuation_factor` / `--continuation-factor` | Continuation length multiplier (A/B only) |
 | `n_bootstrap` | Replicates per cell (default **1** for speed; increase for stable intervals) |
 | `use_prior_regularization` | Default `True` in config; Study B overrides per arm |
 | `prior_flow_weight`, `prior_mc_samples` | Strength and MC draws for HK prior term when enabled |
 | `--full` | Heavier defaults (more data, replicates, Sinkhorn work) |
-| `--study` | `truncation` \| `prior` \| `both` (default `both`) |
+| `--study` | `truncation` \| `prior` \| `both` \| `paw` (default `both`) |
+| `--n-data`, `--k` | Paw study only: **n** and continuation **k** for case (c) |
 
 ---
 
@@ -116,12 +147,13 @@ python bootstrap_experiment.py --study prior
 |------|---------|
 | `bootstrap_truncation_vs_continuation.pdf` | Study A |
 | `bootstrap_prior_regularization.pdf` | Study B |
+| `paw_hk_comparison.pdf` / `paw_hk_overlay_n{n}.pdf` | Study C (paw) |
 
 ---
 
 ## Implementation pointers
 
-- Studies: `run_study_truncation_vs_continuation`, `run_study_prior_regularization` in [`bootstrap_experiment.py`](bootstrap_experiment.py).
+- Studies: `run_study_truncation_vs_continuation`, `run_study_prior_regularization`, `run_study_paw_hk` in [`bootstrap_experiment.py`](bootstrap_experiment.py).
 - Per-replicate overrides: `n_steps_override`, `bootstrap_after_data_override`, `use_prior_regularization` on `run_single_hk_replicate`.
 - Index continuation logic: `_prepare_run` in [`recursive_mixtures/flows.py`](recursive_mixtures/flows.py).
 - Prior term gate: `HellingerKantorovichFlow.use_prior_regularization` and `need_mc` in `step`.
