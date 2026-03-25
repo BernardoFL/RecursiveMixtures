@@ -21,10 +21,10 @@ import numpy as np
 jax.config.update("jax_enable_x64", True)
 
 from recursive_mixtures import (
+    DirichletProcessPrior,
     GaussianKernel,
     ParticleMeasure,
     GaussianPrior,
-    MixturePrior,
     HellingerKantorovichFlow,
     NewtonFlow,
 )
@@ -55,9 +55,10 @@ def setup_experiment():
         'prior_flow_weight': 0.1,
         'prior_mc_samples': 5,
         
-        # Prior parameters
+        # Mixing prior: DP(α, G0), G0 = Gaussian on θ
         'prior_mean': 0.0,
         'prior_std': 3.0,
+        'dp_concentration': 10.0,
         
         # Recording
         'store_every': 10,
@@ -102,13 +103,20 @@ def run_hk_flow(config):
     kernel = GaussianKernel(bandwidth=config['kernel_bandwidth'])
     print(f"\n2. Kernel: Gaussian with bandwidth {config['kernel_bandwidth']}")
     
-    # Initialize prior
-    prior = GaussianPrior(
+    # Mixing prior (atom locations): Dirichlet process centered at Gaussian G0
+    base_prior = GaussianPrior(
         mean=config['prior_mean'],
         std=config['prior_std'],
         dim=1,
     )
-    print(f"   Prior: Gaussian({config['prior_mean']}, {config['prior_std']}²)")
+    prior = DirichletProcessPrior(
+        base_prior=base_prior,
+        concentration=float(config['dp_concentration']),
+    )
+    print(
+        f"   Prior: DP(α={config['dp_concentration']}, "
+        f"G0=N({config['prior_mean']}, {config['prior_std']}²))"
+    )
     
     # Initialize particle measure from prior
     key, subkey = jr.split(key)
@@ -190,12 +198,16 @@ def run_newton_flow(config):
     )
     data = data.squeeze()  # (n_data,)
 
-    # Kernel and prior (same as HK)
+    # Kernel prior (same DP × Gaussian construction as HK)
     kernel = GaussianKernel(bandwidth=config['kernel_bandwidth'])
-    prior = GaussianPrior(
+    base_prior = GaussianPrior(
         mean=config['prior_mean'],
         std=config['prior_std'],
         dim=1,
+    )
+    prior = DirichletProcessPrior(
+        base_prior=base_prior,
+        concentration=float(config['dp_concentration']),
     )
 
     # Initial particle measure

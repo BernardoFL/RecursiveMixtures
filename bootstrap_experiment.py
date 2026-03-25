@@ -24,6 +24,7 @@ import numpy as np
 from matplotlib.backends.backend_pdf import PdfPages
 
 from recursive_mixtures import (
+    DirichletProcessPrior,
     GaussianKernel,
     ParticleMeasure,
     GaussianPrior,
@@ -70,9 +71,10 @@ def setup_config(fast: bool = True) -> Dict:
         "sinkhorn_num_iters": 25 if fast else 50,  # Sinkhorn iters per OT solve
         # Bootstrap replicates per cell; plots use the first replicate only
         "n_bootstrap": 1,
-        # Prior
+        # Mixing prior: DP(α, G0) with G0 = isotropic Gaussian on atom locations
         "prior_mean": jnp.array([0.0, 0.0]),
         "prior_std": 3.0,
+        "dp_concentration": 10.0,
         # Density grid
         "grid_min": -5.0,
         "grid_max": 5.0,
@@ -109,11 +111,15 @@ def generate_bivariate_data(
 
 
 def make_prior_and_kernel(config: Dict):
-    """Create prior and kernel objects for the HK flow."""
-    prior = GaussianPrior(
+    """DP mixing prior DP(α, G0) with G0 Gaussian; Gaussian kernel for HK."""
+    base_prior = GaussianPrior(
         mean=config["prior_mean"],
         std=config["prior_std"],
         dim=2,
+    )
+    prior = DirichletProcessPrior(
+        base_prior=base_prior,
+        concentration=float(config["dp_concentration"]),
     )
     kernel = GaussianKernel(bandwidth=config["kernel_bandwidth"])
     return prior, kernel
