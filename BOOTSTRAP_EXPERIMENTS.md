@@ -19,7 +19,7 @@ When you change flow logic, defaults, or plotting code, **re-run** the matching 
 
 - **Target**: A fixed **bivariate Gaussian mixture** (three components). True parameters live in `setup_config()` (`true_means`, `true_stds`, `true_weights`).
 - **Observed data**: i.i.d. samples from that mixture of size **`n_data`** (varies per study iteration when using `n_data_list`).
-- **Particle approximation**: HK, Newton–Hellinger, and Newton–Wasserstein flows (as in the script) with a **Gaussian prior** on atom locations and a **fixed particle count** `n_particles`.
+- **Particle approximation**: **Hellinger–Kantorovich (HK)** flow with a **Gaussian prior** on atom locations and a **fixed particle count** `n_particles`.
 - **Bayesian bootstrap (per replicate)**: For each Monte Carlo replicate, Dirichlet-style weights are drawn over data indices; a **bootstrap dataset** `data_boot` of length `n_data` is built by sampling training indices **with replacement** according to those weights. That is independent from **index continuation** (below).
 
 ## Two meanings of “bootstrap”
@@ -28,7 +28,7 @@ When you change flow logic, defaults, or plotting code, **re-run** the matching 
 2. **Index continuation (flow runtime)** — After the first pass over `data_boot`, the flow can either **stop** or **draw more steps** by appending random indices into `data_boot` (uniformly). This is controlled by `n_steps` and `bootstrap_after_data` in `flow.run` / `_prepare_run` in [`recursive_mixtures/flows.py`](recursive_mixtures/flows.py).
 
 Study **A** compares (1) one epoch through `data_boot` vs (2) extra steps with index continuation.  
-Study **B** fixes continuation and toggles **Fisher–Rao prior regularization** in the HK flow only.
+Study **B** fixes continuation and toggles **Fisher–Rao prior regularization** on vs off (HK only).
 
 ---
 
@@ -45,13 +45,9 @@ Study **B** fixes continuation and toggles **Fisher–Rao prior regularization**
 
 Default `continuation_factor` is **2.0** (configurable).
 
-### Flows compared
+### Flow compared
 
-For **each** `n` and **each** condition, the script runs **`n_bootstrap` replicates** per cell; the PDF shows the **first** replicate’s final particles.
-
-- **HK** (Hellinger–Kantorovich: weight + atom updates)
-- **Newton–H** (Fisher–Rao / Hellinger on weights, fixed atoms)
-- **Newton–W** (Wasserstein on atoms, fixed weights)
+Study A uses **HK only**. For **each** `n`, it runs **`n_bootstrap`** truncated HK flows and **`n_bootstrap`** continuation HK flows (independent bootstrap resamples per call); the PDF shows the **first** replicate of each arm (**teal** = stop after data, **crimson** = continuation).
 
 ### Data generation note
 
@@ -59,7 +55,7 @@ For each `n`, a **new full dataset** of size `n` is simulated from the same true
 
 ### Output
 
-- **Plot**: `bootstrap_truncation_vs_continuation.pdf` — **multi-page PDF** (one page per `n`). Each page is a **2×3** grid: **true mixture density** (heatmap) + **bootstrap training data** scatter + **final particles** (size ∝ weight). **Rows**: truncated vs continuation; **columns**: HK, Newton–H, Newton–W (**colors**: teal, royal blue, crimson).
+- **Plot**: `bootstrap_truncation_vs_continuation.pdf` — **multi-page PDF** (one page per `n`). Each page is **1×2**: HK **truncated** vs HK **continuation** — true density heatmap + bootstrap training data + final particles (size ∝ weight); **teal** / **crimson**.
 - **Console**: progress only (sample sizes and step counts).
 
 ### CLI
@@ -90,8 +86,6 @@ In [`HellingerKantorovichFlow`](recursive_mixtures/flows.py), `use_prior_regular
 - **`False`**: That **weight-update** prior term is **skipped**, **even if** `prior_flow_weight` is positive.
 
 **Not toggled:** Atom updates can still use **Sinkhorn drift toward the prior** when `use_sinkhorn=True` (separate from the Fisher–Rao prior regularization switch).
-
-Newton–H and Newton–W **do not** implement this HK-specific term; Study B is **HK-only** by design.
 
 ### Output
 
@@ -158,7 +152,7 @@ python bootstrap_experiment.py --study paw --n-data-list 200,500,1000 --k 200
 
 | File | Content |
 |------|---------|
-| `bootstrap_truncation_vs_continuation.pdf` | Study A — multi-page heatmaps + particles (2×3 per page) |
+| `bootstrap_truncation_vs_continuation.pdf` | Study A — multi-page HK truncated vs continuation (1×2 per page) |
 | `bootstrap_prior_regularization.pdf` | Study B — multi-page overlay (density + data + HK on/off particles) |
 | `paw_hk_comparison.pdf` / `paw_hk_overlay_n{n}.pdf` | Study C (paw) |
 

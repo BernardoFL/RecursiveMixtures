@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-Bootstrap resampling for particle HK / Newton flows on a bivariate Gaussian mixture.
+Bootstrap resampling for the particle Hellinger–Kantorovich (HK) flow on a
+bivariate Gaussian mixture.
 
 Each replicate draws Bayesian bootstrap weights, builds a resampled data stream,
-and runs the chosen flow. Studies **truncation** and **prior** save multi-page
-PDFs: true-density heatmaps with training data and final particles (marker size
-∝ weight). Study **paw** is the cat-paw HK triple (see ``--study paw``).
+and runs HK. Studies **truncation** and **prior** save multi-page PDFs: true-density
+heatmaps with training data and final particles (marker size ∝ weight). Study
+**paw** is the cat-paw HK triple (see ``--study paw``).
 """
 
 from __future__ import annotations
@@ -28,7 +29,6 @@ from recursive_mixtures import (
     GaussianPrior,
     HellingerKantorovichFlow,
 )
-from recursive_mixtures.flows import NewtonHellingerFlow, NewtonWassersteinFlow
 from recursive_mixtures.utils import (
     bayesian_bootstrap,
     generate_mixture_data,
@@ -143,40 +143,6 @@ def make_hk_flow(
     return flow
 
 
-def make_newton_hellinger_flow(
-    prior,
-    kernel,
-    config: Dict,
-) -> NewtonHellingerFlow:
-    """Instantiate a Newton-Hellinger (weight-only) flow."""
-    flow = NewtonHellingerFlow(
-        kernel=kernel,
-        prior=prior,
-        step_size=config["step_size"],
-    )
-    return flow
-
-
-def make_newton_wasserstein_flow(
-    prior,
-    kernel,
-    prior_particles: ParticleMeasure,
-    config: Dict,
-) -> NewtonWassersteinFlow:
-    """Instantiate a Newton-Wasserstein (location-only) flow."""
-    flow = NewtonWassersteinFlow(
-        kernel=kernel,
-        prior=prior,
-        step_size=config["step_size"],
-        wasserstein_weight=config["wasserstein_weight"],
-        sinkhorn_reg=config["sinkhorn_reg"],
-        use_sinkhorn=True,
-        prior_particles=prior_particles,
-        sinkhorn_num_iters=config.get("sinkhorn_num_iters", 30),
-    )
-    return flow
-
-
 def run_single_hk_replicate(
     key: jax.Array,
     data: jax.Array,
@@ -245,138 +211,6 @@ def run_single_hk_replicate(
             data_boot,
             key=key_flow,
             store_every=total_steps,  # only store final state
-            n_steps=n_steps,
-            bootstrap_after_data=bootstrap_after_data,
-        )
-    return final_measure
-
-
-def run_single_newton_h_replicate(
-    key: jax.Array,
-    data: jax.Array,
-    prior,
-    kernel,
-    config: Dict,
-    *,
-    n_steps_override: Optional[int] = None,
-    bootstrap_after_data_override: Optional[bool] = None,
-) -> ParticleMeasure:
-    """
-    Run a single Newton-Hellinger bootstrap replicate (weights only, fixed atoms).
-    """
-    n_data = data.shape[0]
-    n_particles = config["n_particles"]
-
-    # Split keys for bootstrap weights, resampling, prior initialization, and flow
-    key_boot, key_resample, key_init, key_flow = jr.split(key, 4)
-
-    # Bayesian bootstrap weights and resampling indices
-    weights_boot = bayesian_bootstrap(key_boot, n_data)
-    indices = jr.choice(
-        key_resample,
-        n_data,
-        shape=(n_data,),
-        p=weights_boot,
-        replace=True,
-    )
-    data_boot = data[indices]
-
-    # Fixed atoms from the prior
-    atoms0 = prior.sample(key_init, n_particles)
-    initial_measure = ParticleMeasure.initialize(atoms0)
-
-    flow = make_newton_hellinger_flow(prior, kernel, config)
-
-    n_steps = n_steps_override if n_steps_override is not None else config.get("n_steps")
-    if bootstrap_after_data_override is not None:
-        bootstrap_after_data = bootstrap_after_data_override
-    else:
-        bootstrap_after_data = bool(
-            n_steps is not None and n_steps > int(data_boot.shape[0])
-        )
-    total_steps = int(n_steps) if n_steps is not None else int(data_boot.shape[0])
-
-    if config["store_every"] and config["store_every"] > 0:
-        final_measure, _ = flow.run(
-            initial_measure,
-            data_boot,
-            key=key_flow,
-            store_every=config["store_every"],
-            n_steps=n_steps,
-            bootstrap_after_data=bootstrap_after_data,
-        )
-    else:
-        final_measure, _ = flow.run(
-            initial_measure,
-            data_boot,
-            key=key_flow,
-            store_every=total_steps,
-            n_steps=n_steps,
-            bootstrap_after_data=bootstrap_after_data,
-        )
-    return final_measure
-
-
-def run_single_newton_w_replicate(
-    key: jax.Array,
-    data: jax.Array,
-    prior,
-    kernel,
-    prior_particles: ParticleMeasure,
-    config: Dict,
-    *,
-    n_steps_override: Optional[int] = None,
-    bootstrap_after_data_override: Optional[bool] = None,
-) -> ParticleMeasure:
-    """
-    Run a single Newton-Wasserstein bootstrap replicate (locations only, fixed weights).
-    """
-    n_data = data.shape[0]
-    n_particles = config["n_particles"]
-
-    # Split keys for bootstrap weights, resampling, prior initialization, and flow
-    key_boot, key_resample, key_init, key_flow = jr.split(key, 4)
-
-    # Bayesian bootstrap weights and resampling indices
-    weights_boot = bayesian_bootstrap(key_boot, n_data)
-    indices = jr.choice(
-        key_resample,
-        n_data,
-        shape=(n_data,),
-        p=weights_boot,
-        replace=True,
-    )
-    data_boot = data[indices]
-
-    atoms0 = prior.sample(key_init, n_particles)
-    initial_measure = ParticleMeasure.initialize(atoms0)
-
-    flow = make_newton_wasserstein_flow(prior, kernel, prior_particles, config)
-
-    n_steps = n_steps_override if n_steps_override is not None else config.get("n_steps")
-    if bootstrap_after_data_override is not None:
-        bootstrap_after_data = bootstrap_after_data_override
-    else:
-        bootstrap_after_data = bool(
-            n_steps is not None and n_steps > int(data_boot.shape[0])
-        )
-    total_steps = int(n_steps) if n_steps is not None else int(data_boot.shape[0])
-
-    if config["store_every"] and config["store_every"] > 0:
-        final_measure, _ = flow.run(
-            initial_measure,
-            data_boot,
-            key=key_flow,
-            store_every=config["store_every"],
-            n_steps=n_steps,
-            bootstrap_after_data=bootstrap_after_data,
-        )
-    else:
-        final_measure, _ = flow.run(
-            initial_measure,
-            data_boot,
-            key=key_flow,
-            store_every=total_steps,
             n_steps=n_steps,
             bootstrap_after_data=bootstrap_after_data,
         )
@@ -452,39 +286,32 @@ def plot_truncation_bootstrap_page(
     config: Dict,
     true_grid: np.ndarray,
     data: jax.Array,
-    hk_t: ParticleMeasure,
-    nh_t: ParticleMeasure,
-    nw_t: ParticleMeasure,
-    hk_c: ParticleMeasure,
-    nh_c: ParticleMeasure,
-    nw_c: ParticleMeasure,
+    hk_trunc: ParticleMeasure,
+    hk_cont: ParticleMeasure,
     n_data: int,
     n_steps_cont: int,
 ) -> plt.Figure:
-    """One figure: 2×3 panels — row 0 truncated, row 1 continuation; cols HK, NH, NW."""
+    """HK only: 1×2 panels — truncated vs continuation."""
     extent = _extent_from_config(config)
     data_np = np.asarray(data)
-    fig, axes = plt.subplots(2, 3, figsize=(16, 10), sharex=True, sharey=True)
-    rows = [
-        (f"Stop after data (n_steps = {n_data})", (hk_t, nh_t, nw_t)),
-        (f"Continuation (n_steps = {n_steps_cont})", (hk_c, nh_c, nw_c)),
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5.5), sharey=True)
+    panels = [
+        (hk_trunc, "teal", f"HK: stop after data (n_steps = {n_data})"),
+        (hk_cont, "crimson", f"HK: continuation (n_steps = {n_steps_cont})"),
     ]
-    colors = ("teal", "royalblue", "crimson")
-    col_titles = ("HK", "Newton–H", "Newton–W")
-    for row_ax, (row_title, measures) in zip(axes, rows):
-        for ax, m, col_title, color in zip(row_ax, measures, col_titles, colors):
-            ax.imshow(
-                true_grid,
-                origin="lower",
-                extent=extent,
-                aspect="auto",
-                cmap="gray_r",
-            )
-            _scatter_data_and_particles(ax, config, data_np, m, color)
-            ax.set_title(f"{col_title}: {row_title}")
+    for ax, (m, color, title) in zip(axes, panels):
+        ax.imshow(
+            true_grid,
+            origin="lower",
+            extent=extent,
+            aspect="auto",
+            cmap="gray_r",
+        )
+        _scatter_data_and_particles(ax, config, data_np, m, color)
+        ax.set_title(title)
     fig.suptitle(
-        f"True density + data + particles (size ∝ weight), n = {n_data}",
-        y=0.995,
+        f"HK — true density + data + particles (size ∝ weight), n = {n_data}",
+        y=1.02,
     )
     plt.tight_layout()
     return fig
@@ -967,12 +794,12 @@ def run_study_truncation_vs_continuation(config: Dict, key: jax.Array) -> jax.Ar
                 f"continuation n_steps={n_steps_cont} (factor={continuation_factor})"
             )
 
-            hk_t, nh_t, nw_t = [], [], []
+            hk_t, hk_c = [], []
             for _ in range(B):
-                key, key_hk, key_nh, key_nw = jr.split(key, 4)
+                key, key_trunc, key_cont = jr.split(key, 3)
                 hk_t.append(
                     run_single_hk_replicate(
-                        key_hk,
+                        key_trunc,
                         data,
                         prior,
                         kernel,
@@ -982,59 +809,9 @@ def run_study_truncation_vs_continuation(config: Dict, key: jax.Array) -> jax.Ar
                         bootstrap_after_data_override=False,
                     )
                 )
-                nh_t.append(
-                    run_single_newton_h_replicate(
-                        key_nh,
-                        data,
-                        prior,
-                        kernel,
-                        cfg,
-                        n_steps_override=n_steps_trunc,
-                        bootstrap_after_data_override=False,
-                    )
-                )
-                nw_t.append(
-                    run_single_newton_w_replicate(
-                        key_nw,
-                        data,
-                        prior,
-                        kernel,
-                        prior_particles,
-                        cfg,
-                        n_steps_override=n_steps_trunc,
-                        bootstrap_after_data_override=False,
-                    )
-                )
-
-            hk_c, nh_c, nw_c = [], [], []
-            for _ in range(B):
-                key, key_hk, key_nh, key_nw = jr.split(key, 4)
                 hk_c.append(
                     run_single_hk_replicate(
-                        key_hk,
-                        data,
-                        prior,
-                        kernel,
-                        prior_particles,
-                        cfg,
-                        n_steps_override=n_steps_cont,
-                        bootstrap_after_data_override=True,
-                    )
-                )
-                nh_c.append(
-                    run_single_newton_h_replicate(
-                        key_nh,
-                        data,
-                        prior,
-                        kernel,
-                        cfg,
-                        n_steps_override=n_steps_cont,
-                        bootstrap_after_data_override=True,
-                    )
-                )
-                nw_c.append(
-                    run_single_newton_w_replicate(
-                        key_nw,
+                        key_cont,
                         data,
                         prior,
                         kernel,
@@ -1050,18 +827,14 @@ def run_study_truncation_vs_continuation(config: Dict, key: jax.Array) -> jax.Ar
                 true_grid,
                 data,
                 hk_t[0],
-                nh_t[0],
-                nw_t[0],
                 hk_c[0],
-                nh_c[0],
-                nw_c[0],
                 nd,
                 n_steps_cont,
             )
             pdf.savefig(fig, bbox_inches="tight")
             plt.close(fig)
 
-    print(f"\nSaved multi-page '{out_pdf}' (heatmap + particles per method, one page per n).")
+    print(f"\nSaved multi-page '{out_pdf}' (HK: truncation vs continuation, one page per n).")
     return key
 
 
