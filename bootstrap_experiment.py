@@ -4,8 +4,10 @@ Bootstrap resampling for the particle Hellinger–Kantorovich (HK) flow on a
 bivariate Gaussian mixture.
 
 Each replicate draws Bayesian bootstrap weights, builds a resampled data stream,
-and runs HK. Studies **truncation** and **prior** save multi-page PDFs: true-density
-heatmaps with final particles (marker size ∝ weight).
+and runs HK. Study **truncation** saves a multi-page PDF (one 1×2 page per sample
+size). Study **prior** saves a single-page **2×N** grid (rows: prior on / off;
+columns: each `n` in `n_data_list`): true-density heatmaps with final particles
+(marker size ∝ weight).
 """
 
 from __future__ import annotations
@@ -246,6 +248,7 @@ def _scatter_particles(
     color: str,
     *,
     size_scale: float = 300.0,
+    with_axis_labels: bool = True,
 ) -> None:
     """True-density axes: particles with marker size ∝ weight."""
     atoms = np.asarray(measure.atoms)
@@ -264,8 +267,9 @@ def _scatter_particles(
     )
     ax.set_xlim(config["grid_min"], config["grid_max"])
     ax.set_ylim(config["grid_min"], config["grid_max"])
-    ax.set_xlabel("x₁")
-    ax.set_ylabel("x₂")
+    if with_axis_labels:
+        ax.set_xlabel("x₁")
+        ax.set_ylabel("x₂")
 
 
 def plot_truncation_bootstrap_page(
@@ -302,44 +306,50 @@ def plot_truncation_bootstrap_page(
     return fig
 
 
-def plot_prior_regularization_page(
+def plot_prior_regularization_grid(
     config: Dict,
     true_grid: np.ndarray,
-    data: jax.Array,
-    hk_on: ParticleMeasure,
-    hk_off: ParticleMeasure,
-    n_data: int,
-    n_steps: int,
+    column_results: List[Tuple[jax.Array, ParticleMeasure, ParticleMeasure, int]],
 ) -> plt.Figure:
-    """HK only: 1×2 panels — prior regularization on vs off (same layout as Study A)."""
+    """
+    HK Study B: 2×N grid — columns = sample sizes, top row = prior on, bottom = prior off.
+    Same panel style as Study A (true-density heatmap + particles, size ∝ weight).
+    """
+    ncols = len(column_results)
     extent = _extent_from_config(config)
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5.5), sharey=True)
-    panels = [
-        (
-            hk_on,
-            "teal",
-            "HK: Fisher–Rao prior reg. on",
-        ),
-        (
-            hk_off,
-            "royalblue",
-            "HK: Fisher–Rao prior reg. off",
-        ),
-    ]
-    for ax, (m, color, title) in zip(axes, panels):
-        ax.imshow(
-            true_grid,
-            origin="lower",
-            extent=extent,
-            aspect="auto",
-            cmap="gray_r",
-        )
-        _scatter_particles(ax, config, m, color)
-        ax.set_title(f"{title}\n(continuation, n_steps = {n_steps})")
+    fig_w = max(12.0, 4.0 * ncols)
+    fig, axes = plt.subplots(2, ncols, figsize=(fig_w, 9.0), sharex=True, sharey=True)
+    axes = np.asarray(axes)
+    if axes.ndim == 1:
+        axes = axes.reshape(2, 1)
+    for j, (_data, hk_on, hk_off, nd) in enumerate(column_results):
+        n_steps = int(nd)
+        for row, (measure, color, row_label) in enumerate(
+            [
+                (hk_on, "teal", "Fisher–Rao prior reg. on"),
+                (hk_off, "royalblue", "Fisher–Rao prior reg. off"),
+            ]
+        ):
+            ax = axes[row, j]
+            ax.imshow(
+                true_grid,
+                origin="lower",
+                extent=extent,
+                aspect="auto",
+                cmap="gray_r",
+            )
+            _scatter_particles(
+                ax, config, measure, color, with_axis_labels=False
+            )
+            ax.set_title(f"n = {nd}\n{row_label}\n(n_steps = {n_steps})")
+    for j in range(ncols):
+        axes[1, j].set_xlabel("x₁")
+    for row in range(2):
+        axes[row, 0].set_ylabel("x₂")
     fig.suptitle(
-        f"HK — prior regularization, true density + particles (size ∝ weight), "
-        f"n = {n_data}",
-        y=1.02,
+        "HK — prior regularization (no continuation): true density + particles "
+        "(size ∝ weight)",
+        y=1.01,
     )
     plt.tight_layout()
     return fig
@@ -431,60 +441,56 @@ def run_study_prior_regularization(config: Dict, key: jax.Array) -> jax.Array:
     true_grid = build_bootstrap_true_density_grid(config)
     out_pdf = "bootstrap_prior_regularization.pdf"
 
-    with PdfPages(out_pdf) as pdf:
-        for nd in n_data_list:
-            cfg = dict(config)
-            cfg["n_data"] = nd
-            key, data_key, pp_key = jr.split(key, 3)
-            data, _ = generate_bivariate_data(data_key, cfg)
-            prior_particles = prior.to_particle_measure(pp_key, cfg["n_particles"])
-            n_steps = int(nd)
-            print(f"  n_data={nd}, n_steps={n_steps} (continuation disabled)")
+    column_results: List[Tuple[jax.Array, ParticleMeasure, ParticleMeasure, int]] = []
 
-            hk_on, hk_off = [], []
-            for _ in range(B):
-                key, key_on, key_off = jr.split(key, 3)
-                hk_on.append(
-                    run_single_hk_replicate(
-                        key_on,
-                        data,
-                        prior,
-                        kernel,
-                        prior_particles,
-                        cfg,
-                        n_steps_override=n_steps,
-                        bootstrap_after_data_override=False,
-                        use_prior_regularization=True,
-                    )
-                )
-                hk_off.append(
-                    run_single_hk_replicate(
-                        key_off,
-                        data,
-                        prior,
-                        kernel,
-                        prior_particles,
-                        cfg,
-                        n_steps_override=n_steps,
-                        bootstrap_after_data_override=False,
-                        use_prior_regularization=False,
-                    )
-                )
+    for nd in n_data_list:
+        cfg = dict(config)
+        cfg["n_data"] = nd
+        key, data_key, pp_key = jr.split(key, 3)
+        data, _ = generate_bivariate_data(data_key, cfg)
+        prior_particles = prior.to_particle_measure(pp_key, cfg["n_particles"])
+        n_steps = int(nd)
+        print(f"  n_data={nd}, n_steps={n_steps} (continuation disabled)")
 
-            fig = plot_prior_regularization_page(
-                cfg,
-                true_grid,
-                data,
-                hk_on[0],
-                hk_off[0],
-                nd,
-                n_steps,
+        hk_on, hk_off = [], []
+        for _ in range(B):
+            key, key_on, key_off = jr.split(key, 3)
+            hk_on.append(
+                run_single_hk_replicate(
+                    key_on,
+                    data,
+                    prior,
+                    kernel,
+                    prior_particles,
+                    cfg,
+                    n_steps_override=n_steps,
+                    bootstrap_after_data_override=False,
+                    use_prior_regularization=True,
+                )
             )
-            pdf.savefig(fig, bbox_inches="tight")
-            plt.close(fig)
+            hk_off.append(
+                run_single_hk_replicate(
+                    key_off,
+                    data,
+                    prior,
+                    kernel,
+                    prior_particles,
+                    cfg,
+                    n_steps_override=n_steps,
+                    bootstrap_after_data_override=False,
+                    use_prior_regularization=False,
+                )
+            )
+
+        column_results.append((data, hk_on[0], hk_off[0], nd))
+
+    fig = plot_prior_regularization_grid(config, true_grid, column_results)
+    with PdfPages(out_pdf) as pdf:
+        pdf.savefig(fig, bbox_inches="tight")
+    plt.close(fig)
 
     print(
-        f"\nSaved multi-page '{out_pdf}' (HK: prior on vs off, continuation disabled, 1×2 per n)."
+        f"\nSaved '{out_pdf}' (HK: 2×{len(n_data_list)} grid, prior on/off × sample sizes)."
     )
     return key
 
