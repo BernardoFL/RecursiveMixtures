@@ -82,7 +82,7 @@ Newton–H and Newton–W **do not** implement this HK-specific term; Study B is
 
 ### Output
 
-- **Plot**: `bootstrap_prior_regularization.pdf` — **multi-page PDF** (one page per `n`). Two panels (prior on vs off): true density + data + final particles (size ∝ weight). **First** bootstrap replicate per arm.
+- **Plot**: `bootstrap_prior_regularization.pdf` — **multi-page PDF** (one page per `n`). Each page is a **single** axes: true density heatmap + data + **both** HK particle draws **overlaid** (teal = prior regularization on, royalblue = off; marker size ∝ weight), matching the overlay style used in the paw HK plots. **First** bootstrap replicate per arm.
 - **Console**: progress only.
 
 ### CLI
@@ -146,7 +146,7 @@ python bootstrap_experiment.py --study paw --n-data-list 200,500,1000 --k 200
 | File | Content |
 |------|---------|
 | `bootstrap_truncation_vs_continuation.pdf` | Study A — multi-page heatmaps + particles (2×3 per page) |
-| `bootstrap_prior_regularization.pdf` | Study B — multi-page heatmaps + HK particles (1×2 per page) |
+| `bootstrap_prior_regularization.pdf` | Study B — multi-page overlay (density + data + HK on/off particles) |
 | `paw_hk_comparison.pdf` / `paw_hk_overlay_n{n}.pdf` | Study C (paw) |
 
 ---
