@@ -821,12 +821,11 @@ def run_study_truncation_vs_continuation(config: Dict, key: jax.Array) -> jax.Ar
 
 
 def run_study_prior_regularization(config: Dict, key: jax.Array) -> jax.Array:
-    """HK only: Fisher–Rao prior on vs off; both arms use the same continuation schedule."""
+    """HK only: Fisher–Rao prior on vs off with continuation disabled in both arms."""
     print("=" * 80)
-    print("Study B: HK with Fisher–Rao prior regularization on vs off (continuation both)")
+    print("Study B: HK with Fisher–Rao prior regularization on vs off (no continuation)")
     print("=" * 80)
     n_data_list = list(config["n_data_list"])
-    continuation_factor = float(config["continuation_factor"])
     B = config["n_bootstrap"]
     prior, kernel = make_prior_and_kernel(config)
 
@@ -840,8 +839,8 @@ def run_study_prior_regularization(config: Dict, key: jax.Array) -> jax.Array:
             key, data_key, pp_key = jr.split(key, 3)
             data, _ = generate_bivariate_data(data_key, cfg)
             prior_particles = prior.to_particle_measure(pp_key, cfg["n_particles"])
-            n_steps = int(np.ceil(continuation_factor * nd))
-            print(f"  n_data={nd}, continuation n_steps={n_steps}")
+            n_steps = int(nd)
+            print(f"  n_data={nd}, n_steps={n_steps} (continuation disabled)")
 
             hk_on, hk_off = [], []
             for _ in range(B):
@@ -855,7 +854,7 @@ def run_study_prior_regularization(config: Dict, key: jax.Array) -> jax.Array:
                         prior_particles,
                         cfg,
                         n_steps_override=n_steps,
-                        bootstrap_after_data_override=True,
+                        bootstrap_after_data_override=False,
                         use_prior_regularization=True,
                     )
                 )
@@ -868,7 +867,7 @@ def run_study_prior_regularization(config: Dict, key: jax.Array) -> jax.Array:
                         prior_particles,
                         cfg,
                         n_steps_override=n_steps,
-                        bootstrap_after_data_override=True,
+                        bootstrap_after_data_override=False,
                         use_prior_regularization=False,
                     )
                 )
@@ -886,7 +885,7 @@ def run_study_prior_regularization(config: Dict, key: jax.Array) -> jax.Array:
             plt.close(fig)
 
     print(
-        f"\nSaved multi-page '{out_pdf}' (HK: prior on vs off, 1×2 per n, same style as Study A)."
+        f"\nSaved multi-page '{out_pdf}' (HK: prior on vs off, continuation disabled, 1×2 per n)."
     )
     return key
 

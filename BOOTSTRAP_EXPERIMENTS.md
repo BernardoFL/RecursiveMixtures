@@ -71,12 +71,12 @@ Optional: `--n-data-list 50,100,200`, `--continuation-factor 2.0`, `--full` (cha
 
 ## Study B: HK Fisher–Rao prior regularization ON vs OFF
 
-**Goal:** For each `n ∈ n_data_list`, visualize **HK only** with Fisher–Rao prior regularization **on** vs **off** (same continuation schedule for both).
+**Goal:** For each `n ∈ n_data_list`, visualize **HK only** with Fisher–Rao prior regularization **on** vs **off** with continuation explicitly disabled in both arms.
 
 ### Schedule (both arms)
 
-- `n_steps = ceil(continuation_factor × n_data)`
-- `bootstrap_after_data = True`
+- `n_steps = n_data`
+- `bootstrap_after_data = False`
 
 ### What is toggled
 
@@ -89,7 +89,7 @@ In [`HellingerKantorovichFlow`](recursive_mixtures/flows.py), `use_prior_regular
 
 ### Output
 
-- **Plot**: `bootstrap_prior_regularization.pdf` — **multi-page PDF** (one page per `n`). Each page matches Study A’s layout: **1×2** panels — left = Fisher–Rao prior regularization **on** (**teal**), right = **off** (**royalblue**); each panel has its own true-density heatmap + bootstrap data + particles (size ∝ weight); both arms use the same continuation `n_steps`. **First** bootstrap replicate per arm.
+- **Plot**: `bootstrap_prior_regularization.pdf` — **multi-page PDF** (one page per `n`). Each page matches Study A’s layout: **1×2** panels — left = Fisher–Rao prior regularization **on** (**teal**), right = **off** (**royalblue**); each panel has its own true-density heatmap + bootstrap data + particles (size ∝ weight); both arms use the same non-continuation `n_steps = n_data`. **First** bootstrap replicate per arm.
 - **Console**: progress only.
 
 ### CLI
