@@ -58,8 +58,6 @@ python metastability_experiment.py --n-data 500 --k 100
 
 Case **(c)** with default **k = 1000** performs many Sinkhorn-heavy steps; use smaller `--k` for interactive runs.
 
-**Overlay sweep over several sample sizes** (one combined plot per **n**) lives in [`bootstrap_experiment.py`](bootstrap_experiment.py): `python bootstrap_experiment.py --study paw --n-data-list 200,500,1000 --k 200` writes `paw_hk_overlay_n{n}.pdf`. See [`BOOTSTRAP_EXPERIMENTS.md`](BOOTSTRAP_EXPERIMENTS.md) Study C.
-
 ## Related code
 
 - [`paw_distribution.py`](paw_distribution.py)

@@ -5,8 +5,7 @@ bivariate Gaussian mixture.
 
 Each replicate draws Bayesian bootstrap weights, builds a resampled data stream,
 and runs HK. Studies **truncation** and **prior** save multi-page PDFs: true-density
-heatmaps with training data and final particles (marker size ∝ weight). Study
-**paw** is the cat-paw HK triple (see ``--study paw``).
+heatmaps with final particles (marker size ∝ weight).
 """
 
 from __future__ import annotations

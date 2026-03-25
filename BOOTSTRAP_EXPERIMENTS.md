@@ -123,7 +123,7 @@ python bootstrap_experiment.py --study prior
 
 ## Implementation pointers
 
-- Studies: `run_study_truncation_vs_continuation`, `run_study_prior_regularization`, `run_study_paw_hk` in [`bootstrap_experiment.py`](bootstrap_experiment.py).
+- Studies: `run_study_truncation_vs_continuation`, `run_study_prior_regularization` in [`bootstrap_experiment.py`](bootstrap_experiment.py).
 - Per-replicate overrides: `n_steps_override`, `bootstrap_after_data_override`, `use_prior_regularization` on `run_single_hk_replicate`.
 - Index continuation logic: `_prepare_run` in [`recursive_mixtures/flows.py`](recursive_mixtures/flows.py).
 - Prior term gate: `HellingerKantorovichFlow.use_prior_regularization` and `need_mc` in `step`.
