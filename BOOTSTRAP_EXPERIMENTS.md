@@ -89,7 +89,7 @@ In [`HellingerKantorovichFlow`](recursive_mixtures/flows.py), `use_prior_regular
 
 ### Output
 
-- **Plot**: `bootstrap_prior_regularization.pdf` — **multi-page PDF** (one page per `n`). Each page is a **single** axes: true density heatmap + data + **both** HK particle draws **overlaid** (teal = prior regularization on, royalblue = off; marker size ∝ weight), matching the overlay style used in the paw HK plots. **First** bootstrap replicate per arm.
+- **Plot**: `bootstrap_prior_regularization.pdf` — **multi-page PDF** (one page per `n`). Each page matches Study A’s layout: **1×2** panels — left = Fisher–Rao prior regularization **on** (**teal**), right = **off** (**royalblue**); each panel has its own true-density heatmap + bootstrap data + particles (size ∝ weight); both arms use the same continuation `n_steps`. **First** bootstrap replicate per arm.
 - **Console**: progress only.
 
 ### CLI
@@ -153,7 +153,7 @@ python bootstrap_experiment.py --study paw --n-data-list 200,500,1000 --k 200
 | File | Content |
 |------|---------|
 | `bootstrap_truncation_vs_continuation.pdf` | Study A — multi-page HK truncated vs continuation (1×2 per page) |
-| `bootstrap_prior_regularization.pdf` | Study B — multi-page overlay (density + data + HK on/off particles) |
+| `bootstrap_prior_regularization.pdf` | Study B — multi-page HK prior on vs off (1×2 per page, same style as A) |
 | `paw_hk_comparison.pdf` / `paw_hk_overlay_n{n}.pdf` | Study C (paw) |
 
 ---

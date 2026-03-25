@@ -317,7 +317,7 @@ def plot_truncation_bootstrap_page(
     return fig
 
 
-def plot_prior_regularization_overlay_page(
+def plot_prior_regularization_page(
     config: Dict,
     true_grid: np.ndarray,
     data: jax.Array,
@@ -326,55 +326,37 @@ def plot_prior_regularization_overlay_page(
     n_data: int,
     n_steps: int,
 ) -> plt.Figure:
-    """Single axes: true density + data + both HK finals overlaid (cf. paw overlay)."""
+    """HK only: 1×2 panels — prior regularization on vs off (same layout as Study A)."""
     extent = _extent_from_config(config)
     data_np = np.asarray(data)
-    fig, ax = plt.subplots(figsize=(8, 7))
-    ax.imshow(
-        true_grid,
-        origin="lower",
-        extent=extent,
-        aspect="auto",
-        cmap="gray_r",
-    )
-    ax.scatter(
-        data_np[:, 0],
-        data_np[:, 1],
-        s=14,
-        c="white",
-        edgecolors="black",
-        linewidths=0.35,
-        alpha=0.75,
-        zorder=2,
-        label="Data",
-    )
-    for measure, color, label in (
-        (hk_on, "teal", "HK: Fisher–Rao prior regularization on"),
-        (hk_off, "royalblue", "HK: Fisher–Rao prior regularization off"),
-    ):
-        atoms = np.asarray(measure.atoms)
-        weights = np.asarray(measure.weights)
-        wmax = float(weights.max())
-        sizes = weights / max(wmax, 1e-12) * 280
-        ax.scatter(
-            atoms[:, 0],
-            atoms[:, 1],
-            s=sizes,
-            c=color,
-            alpha=0.78,
-            edgecolors="white",
-            linewidths=0.35,
-            zorder=3,
-            label=label,
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5.5), sharey=True)
+    panels = [
+        (
+            hk_on,
+            "teal",
+            "HK: Fisher–Rao prior reg. on",
+        ),
+        (
+            hk_off,
+            "royalblue",
+            "HK: Fisher–Rao prior reg. off",
+        ),
+    ]
+    for ax, (m, color, title) in zip(axes, panels):
+        ax.imshow(
+            true_grid,
+            origin="lower",
+            extent=extent,
+            aspect="auto",
+            cmap="gray_r",
         )
-    ax.set_xlabel("x₁")
-    ax.set_ylabel("x₂")
-    ax.set_xlim(config["grid_min"], config["grid_max"])
-    ax.set_ylim(config["grid_min"], config["grid_max"])
-    ax.set_title(
-        f"Prior regularization (continuation, n_steps = {n_steps}), n = {n_data}"
+        _scatter_data_and_particles(ax, config, data_np, m, color)
+        ax.set_title(f"{title}\n(continuation, n_steps = {n_steps})")
+    fig.suptitle(
+        f"HK — prior regularization, true density + data + particles (size ∝ weight), "
+        f"n = {n_data}",
+        y=1.02,
     )
-    ax.legend(loc="best", fontsize=8)
     plt.tight_layout()
     return fig
 
@@ -891,7 +873,7 @@ def run_study_prior_regularization(config: Dict, key: jax.Array) -> jax.Array:
                     )
                 )
 
-            fig = plot_prior_regularization_overlay_page(
+            fig = plot_prior_regularization_page(
                 cfg,
                 true_grid,
                 data,
@@ -904,7 +886,7 @@ def run_study_prior_regularization(config: Dict, key: jax.Array) -> jax.Array:
             plt.close(fig)
 
     print(
-        f"\nSaved multi-page '{out_pdf}' (overlay: density + data + HK on/off particles per n)."
+        f"\nSaved multi-page '{out_pdf}' (HK: prior on vs off, 1×2 per n, same style as Study A)."
     )
     return key
 
