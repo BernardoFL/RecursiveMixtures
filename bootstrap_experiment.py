@@ -5,9 +5,9 @@ bivariate Gaussian mixture.
 
 Each replicate draws Bayesian bootstrap weights, builds a resampled data stream,
 and runs HK. Study **truncation** saves a multi-page PDF (one 1×2 page per sample
-size). Study **prior** saves a single-page **2×N** grid (rows: prior on / off;
-columns: each `n` in `n_data_list`): true-density heatmaps with final particles
-(marker size ∝ weight).
+size). Study **prior** saves a single-page **N×2** grid (one row per `n` in `n_data_list`;
+columns: prior on | prior off): true-density heatmaps with final HK particles
+only (marker size ∝ weight, no training data scatter).
 """
 
 from __future__ import annotations
@@ -281,13 +281,12 @@ def _scatter_particles(
 def plot_truncation_bootstrap_page(
     config: Dict,
     true_grid: np.ndarray,
-    data: jax.Array,
     hk_trunc: ParticleMeasure,
     hk_cont: ParticleMeasure,
     n_data: int,
     n_steps_cont: int,
 ) -> plt.Figure:
-    """HK only: 1×2 panels — truncated vs continuation."""
+    """HK only: 1×2 panels — truncated vs continuation (density + particles, no data scatter)."""
     extent = _extent_from_config(config)
     fig, axes = plt.subplots(1, 2, figsize=(12, 5.5), sharey=True)
     panels = [
@@ -315,28 +314,28 @@ def plot_truncation_bootstrap_page(
 def plot_prior_regularization_grid(
     config: Dict,
     true_grid: np.ndarray,
-    column_results: List[Tuple[jax.Array, ParticleMeasure, ParticleMeasure, int]],
+    row_results: List[Tuple[ParticleMeasure, ParticleMeasure, int]],
 ) -> plt.Figure:
     """
-    HK Study B: 2×N grid — columns = sample sizes, top row = prior on, bottom = prior off.
-    Same panel style as Study A (true-density heatmap + particles, size ∝ weight).
+    HK Study B: N×2 grid — one row per sample size; columns = prior on | prior off.
+    Same panel style as Study A (true-density heatmap + HK particles only).
     """
-    ncols = len(column_results)
+    nrows = len(row_results)
     extent = _extent_from_config(config)
-    fig_w = max(12.0, 4.0 * ncols)
-    fig, axes = plt.subplots(2, ncols, figsize=(fig_w, 9.0), sharex=True, sharey=True)
+    fig_h = max(9.0, 3.4 * nrows)
+    fig, axes = plt.subplots(nrows, 2, figsize=(12.0, fig_h), sharex=True, sharey=True)
     axes = np.asarray(axes)
-    if axes.ndim == 1:
-        axes = axes.reshape(2, 1)
-    for j, (_data, hk_on, hk_off, nd) in enumerate(column_results):
+    if nrows == 1:
+        axes = axes.reshape(1, 2)
+    for i, (hk_on, hk_off, nd) in enumerate(row_results):
         n_steps = int(nd)
-        for row, (measure, color, row_label) in enumerate(
+        for j, (measure, color, col_label) in enumerate(
             [
                 (hk_on, "teal", "Fisher–Rao prior reg. on"),
                 (hk_off, "royalblue", "Fisher–Rao prior reg. off"),
             ]
         ):
-            ax = axes[row, j]
+            ax = axes[i, j]
             ax.imshow(
                 true_grid,
                 origin="lower",
@@ -347,11 +346,13 @@ def plot_prior_regularization_grid(
             _scatter_particles(
                 ax, config, measure, color, with_axis_labels=False
             )
-            ax.set_title(f"n = {nd}\n{row_label}\n(n_steps = {n_steps})")
-    for j in range(ncols):
-        axes[1, j].set_xlabel("x₁")
-    for row in range(2):
-        axes[row, 0].set_ylabel("x₂")
+            ax.set_title(
+                f"n = {nd}, {col_label}\n(n_steps = {n_steps})"
+            )
+    for i in range(nrows):
+        axes[i, 0].set_ylabel("x₂")
+    axes[-1, 0].set_xlabel("x₁")
+    axes[-1, 1].set_xlabel("x₁")
     fig.suptitle(
         "HK — prior regularization (no continuation): true density + particles "
         "(size ∝ weight)",
@@ -422,7 +423,6 @@ def run_study_truncation_vs_continuation(config: Dict, key: jax.Array) -> jax.Ar
             fig = plot_truncation_bootstrap_page(
                 cfg,
                 true_grid,
-                data,
                 hk_t[0],
                 hk_c[0],
                 nd,
@@ -447,7 +447,7 @@ def run_study_prior_regularization(config: Dict, key: jax.Array) -> jax.Array:
     true_grid = build_bootstrap_true_density_grid(config)
     out_pdf = "bootstrap_prior_regularization.pdf"
 
-    column_results: List[Tuple[jax.Array, ParticleMeasure, ParticleMeasure, int]] = []
+    row_results: List[Tuple[ParticleMeasure, ParticleMeasure, int]] = []
 
     for nd in n_data_list:
         cfg = dict(config)
@@ -488,15 +488,15 @@ def run_study_prior_regularization(config: Dict, key: jax.Array) -> jax.Array:
                 )
             )
 
-        column_results.append((data, hk_on[0], hk_off[0], nd))
+        row_results.append((hk_on[0], hk_off[0], nd))
 
-    fig = plot_prior_regularization_grid(config, true_grid, column_results)
+    fig = plot_prior_regularization_grid(config, true_grid, row_results)
     with PdfPages(out_pdf) as pdf:
         pdf.savefig(fig, bbox_inches="tight")
     plt.close(fig)
 
     print(
-        f"\nSaved '{out_pdf}' (HK: 2×{len(n_data_list)} grid, prior on/off × sample sizes)."
+        f"\nSaved '{out_pdf}' (HK: {len(n_data_list)}×2 grid, one row per n, prior on|off)."
     )
     return key
 

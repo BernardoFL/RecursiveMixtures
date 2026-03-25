@@ -53,7 +53,7 @@ For each `n`, a **new full dataset** of size `n` is simulated from the same true
 
 ### Output
 
-- **Plot**: `bootstrap_truncation_vs_continuation.pdf` — **multi-page PDF** (one page per `n`). Each page is **1×2**: HK **truncated** vs HK **continuation** — true density heatmap + final particles (size ∝ weight); **teal** / **crimson**.
+- **Plot**: `bootstrap_truncation_vs_continuation.pdf` — **multi-page PDF** (one page per `n`). Each page is **1×2**: HK **truncated** vs HK **continuation** — true density heatmap + final **HK** particles only (size ∝ weight; no data scatter); **teal** / **crimson**.
 - **Console**: progress only (sample sizes and step counts).
 
 ### CLI
@@ -87,7 +87,7 @@ In [`HellingerKantorovichFlow`](recursive_mixtures/flows.py), `use_prior_regular
 
 ### Output
 
-- **Plot**: `bootstrap_prior_regularization.pdf` — **single-page PDF** with a **2×N** grid (N = `len(n_data_list)`): **top row** = Fisher–Rao prior regularization **on** (**teal**), **bottom row** = **off** (**royalblue**); **each column** is one sample size `n` (same panel style as Study A: true-density heatmap + particles, size ∝ weight). Both arms use `n_steps = n_data` and `bootstrap_after_data = False`. **First** bootstrap replicate per cell.
+- **Plot**: `bootstrap_prior_regularization.pdf` — **single-page PDF** with an **N×2** grid (N = `len(n_data_list)`): **each row** is one sample size `n`; **left column** = Fisher–Rao prior **on** (**teal**), **right column** = **off** (**royalblue**). Same panel style as Study A: true-density heatmap + **HK** particles only (size ∝ weight; no data scatter). Both arms use `n_steps = n_data` and `bootstrap_after_data = False`. **First** bootstrap replicate per cell.
 - **Console**: progress only.
 
 ### CLI
@@ -118,7 +118,7 @@ python bootstrap_experiment.py --study prior
 | File | Content |
 |------|---------|
 | `bootstrap_truncation_vs_continuation.pdf` | Study A — multi-page HK truncated vs continuation (1×2 per page) |
-| `bootstrap_prior_regularization.pdf` | Study B — single page, **2×N** grid: prior on (top) / off (bottom) × each `n` |
+| `bootstrap_prior_regularization.pdf` | Study B — single page, **N×2** grid: one row per `n`, prior on (left) / off (right) |
 
 ---
 
