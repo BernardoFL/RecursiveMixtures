@@ -55,7 +55,7 @@ For each `n`, a **new full dataset** of size `n` is simulated from the same true
 
 ### Output
 
-- **Plot**: `bootstrap_truncation_vs_continuation.pdf` — **multi-page PDF** (one page per `n`). Each page is **1×2**: HK **truncated** vs HK **continuation** — true density heatmap + bootstrap training data + final particles (size ∝ weight); **teal** / **crimson**.
+- **Plot**: `bootstrap_truncation_vs_continuation.pdf` — **multi-page PDF** (one page per `n`). Each page is **1×2**: HK **truncated** vs HK **continuation** — true density heatmap + final particles (size ∝ weight); **teal** / **crimson**.
 - **Console**: progress only (sample sizes and step counts).
 
 ### CLI
@@ -89,7 +89,7 @@ In [`HellingerKantorovichFlow`](recursive_mixtures/flows.py), `use_prior_regular
 
 ### Output
 
-- **Plot**: `bootstrap_prior_regularization.pdf` — **multi-page PDF** (one page per `n`). Each page matches Study A’s layout: **1×2** panels — left = Fisher–Rao prior regularization **on** (**teal**), right = **off** (**royalblue**); each panel has its own true-density heatmap + bootstrap data + particles (size ∝ weight); both arms use the same non-continuation `n_steps = n_data`. **First** bootstrap replicate per arm.
+- **Plot**: `bootstrap_prior_regularization.pdf` — **multi-page PDF** (one page per `n`). Each page matches Study A’s layout: **1×2** panels — left = Fisher–Rao prior regularization **on** (**teal**), right = **off** (**royalblue**); each panel has its own true-density heatmap + particles (size ∝ weight); both arms use the same non-continuation `n_steps = n_data`. **First** bootstrap replicate per arm.
 - **Console**: progress only.
 
 ### CLI
@@ -114,8 +114,8 @@ This path **does not** use the Bayesian bootstrap replicates from Studies A/B; i
 
 | File | When |
 |------|------|
-| `paw_hk_comparison.pdf` | Single **n** (default or `--n-data`): three panels (density + data + particles per case). |
-| `paw_hk_overlay_n{n}.pdf` | `--n-data-list n1,n2,...`: one **overlay** figure per **n** (all three particle sets on one heatmap). |
+| `paw_hk_comparison.pdf` | Single **n** (default or `--n-data`): three panels (density + particles per case). |
+| `paw_hk_overlay_n{n}.pdf` | `--n-data-list n1,n2,...`: one **overlay** figure per **n** (all three particle sets on one heatmap; no data scatter). |
 
 If both `--n-data` and `--n-data-list` are passed, **`--n-data-list` wins** (overlay sweep only).
 

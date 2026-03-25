@@ -242,26 +242,15 @@ def _extent_from_config(config: Dict) -> List[float]:
     ]
 
 
-def _scatter_data_and_particles(
+def _scatter_particles(
     ax,
     config: Dict,
-    data_np: np.ndarray,
     measure: ParticleMeasure,
     color: str,
     *,
     size_scale: float = 300.0,
 ) -> None:
-    """True-density axes: training data + particles with marker size ∝ weight."""
-    ax.scatter(
-        data_np[:, 0],
-        data_np[:, 1],
-        s=12,
-        c="white",
-        edgecolors="black",
-        linewidths=0.35,
-        alpha=0.65,
-        zorder=2,
-    )
+    """True-density axes: particles with marker size ∝ weight."""
     atoms = np.asarray(measure.atoms)
     weights = np.asarray(measure.weights)
     wmax = float(weights.max())
@@ -293,7 +282,6 @@ def plot_truncation_bootstrap_page(
 ) -> plt.Figure:
     """HK only: 1×2 panels — truncated vs continuation."""
     extent = _extent_from_config(config)
-    data_np = np.asarray(data)
     fig, axes = plt.subplots(1, 2, figsize=(12, 5.5), sharey=True)
     panels = [
         (hk_trunc, "teal", f"HK: stop after data (n_steps = {n_data})"),
@@ -307,10 +295,10 @@ def plot_truncation_bootstrap_page(
             aspect="auto",
             cmap="gray_r",
         )
-        _scatter_data_and_particles(ax, config, data_np, m, color)
+        _scatter_particles(ax, config, m, color)
         ax.set_title(title)
     fig.suptitle(
-        f"HK — true density + data + particles (size ∝ weight), n = {n_data}",
+        f"HK — true density + particles (size ∝ weight), n = {n_data}",
         y=1.02,
     )
     plt.tight_layout()
@@ -328,7 +316,6 @@ def plot_prior_regularization_page(
 ) -> plt.Figure:
     """HK only: 1×2 panels — prior regularization on vs off (same layout as Study A)."""
     extent = _extent_from_config(config)
-    data_np = np.asarray(data)
     fig, axes = plt.subplots(1, 2, figsize=(12, 5.5), sharey=True)
     panels = [
         (
@@ -350,10 +337,10 @@ def plot_prior_regularization_page(
             aspect="auto",
             cmap="gray_r",
         )
-        _scatter_data_and_particles(ax, config, data_np, m, color)
+        _scatter_particles(ax, config, m, color)
         ax.set_title(f"{title}\n(continuation, n_steps = {n_steps})")
     fig.suptitle(
-        f"HK — prior regularization, true density + data + particles (size ∝ weight), "
+        f"HK — prior regularization, true density + particles (size ∝ weight), "
         f"n = {n_data}",
         y=1.02,
     )
@@ -497,7 +484,6 @@ def plot_paw_hk_panels(
         config["grid_min"],
         config["grid_max"],
     ]
-    data_np = np.asarray(data)
     panels = [
         ("Prior on, stop at n", measure_a, "teal"),
         ("Prior off, stop at n", measure_b, "royalblue"),
@@ -511,16 +497,6 @@ def plot_paw_hk_panels(
             extent=extent,
             aspect="auto",
             cmap="gray_r",
-        )
-        ax.scatter(
-            data_np[:, 0],
-            data_np[:, 1],
-            s=14,
-            c="white",
-            edgecolors="black",
-            linewidths=0.35,
-            alpha=0.75,
-            zorder=2,
         )
         atoms = np.asarray(measure.atoms)
         weights = np.asarray(measure.weights)
@@ -541,7 +517,7 @@ def plot_paw_hk_panels(
         ax.set_ylabel("x₂")
         ax.set_xlim(config["grid_min"], config["grid_max"])
         ax.set_ylim(config["grid_min"], config["grid_max"])
-    plt.suptitle("Cat-paw HK: density, data, particles (size ∝ weight)", y=1.02)
+    plt.suptitle("Cat-paw HK: density + particles (size ∝ weight)", y=1.02)
     plt.tight_layout()
     plt.savefig(out_path, bbox_inches="tight")
     plt.close(fig)
@@ -562,7 +538,6 @@ def plot_paw_hk_overlay(
         config["grid_min"],
         config["grid_max"],
     ]
-    data_np = np.asarray(data)
     n = int(config["n_data"])
     k_extra = int(config["k"])
     fig, ax = plt.subplots(figsize=(8, 7))
@@ -572,17 +547,6 @@ def plot_paw_hk_overlay(
         extent=extent,
         aspect="auto",
         cmap="gray_r",
-    )
-    ax.scatter(
-        data_np[:, 0],
-        data_np[:, 1],
-        s=14,
-        c="white",
-        edgecolors="black",
-        linewidths=0.35,
-        alpha=0.75,
-        zorder=2,
-        label="Data",
     )
     series = [
         (measure_a, "teal", "(a) Prior on, stop at n"),
