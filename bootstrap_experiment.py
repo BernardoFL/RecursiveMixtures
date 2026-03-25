@@ -1,18 +1,11 @@
 #!/usr/bin/env python3
 """
-Uncertainty Quantification via Bootstrapping for Particle HK Flow.
+Bootstrap resampling for particle HK / Newton flows on a bivariate Gaussian mixture.
 
-This script runs the regularized Particle Hellinger–Kantorovich (HK) flow
-on a bivariate Gaussian mixture using the Bayesian bootstrap to generate
-multiple flow replicates. It then constructs pointwise credible intervals
-for the density and (optionally) compares them against a NumPyro MCMC
-baseline.
-
-Studies (``--study``): **truncation** compares stopping after one data pass
-vs index continuation across sample sizes; **prior** compares HK with
-Fisher–Rao prior regularization on vs off (continuation for both); **paw**
-runs the cat-paw mixture HK comparison (prior on/off, n+k resampling) with
-optional ``--n-data-list`` overlay sweeps (see ``--study paw``).
+Each replicate draws Bayesian bootstrap weights, builds a resampled data stream,
+and runs the chosen flow. Studies **truncation** and **prior** save multi-page
+PDFs: true-density heatmaps with training data and final particles (marker size
+∝ weight). Study **paw** is the cat-paw HK triple (see ``--study paw``).
 """
 
 from __future__ import annotations
@@ -49,7 +42,7 @@ def setup_config(fast: bool = True) -> Dict:
     """Configuration dictionary for the bootstrap HK experiment.
     
     Use fast=True (default) for quicker runs: fewer data steps, bootstrap
-    replicates, Sinkhorn iterations, and MCMC off by default.
+    replicates, and Sinkhorn iterations.
     """
     # Fast defaults: fewer steps and Sinkhorn work so runs complete in minutes
     config = {
@@ -76,7 +69,7 @@ def setup_config(fast: bool = True) -> Dict:
         "use_prior_regularization": True,
         "prior_mc_samples": 1 if fast else 5,  # M (1 = much faster per step)
         "sinkhorn_num_iters": 25 if fast else 50,  # Sinkhorn iters per OT solve
-        # Bootstrap replicates per experiment cell (B=1 for quick runs)
+        # Bootstrap replicates per cell; plots use the first replicate only
         "n_bootstrap": 1,
         # Prior
         "prior_mean": jnp.array([0.0, 0.0]),
@@ -388,78 +381,6 @@ def run_single_newton_w_replicate(
             bootstrap_after_data=bootstrap_after_data,
         )
     return final_measure
-
-
-def build_density_grid(config: Dict) -> jax.Array:
-    """Construct a 2D grid of evaluation points."""
-    gmin = config["grid_min"]
-    gmax = config["grid_max"]
-    n = config["grid_size"]
-    xs = jnp.linspace(gmin, gmax, n)
-    ys = jnp.linspace(gmin, gmax, n)
-    X, Y = jnp.meshgrid(xs, ys)
-    grid_points = jnp.stack([X.ravel(), Y.ravel()], axis=1)  # (n^2, 2)
-    return grid_points
-
-
-def hk_bootstrap_densities(
-    measures: List[ParticleMeasure],
-    kernel,
-    grid_points: jax.Array,
-) -> jax.Array:
-    """
-    Compute density estimates on the grid for each HK bootstrap replicate.
-
-    Returns:
-        Array of shape (B, G) where G = grid_points.shape[0].
-    """
-    densities = []
-    for m in measures:
-        dens = m.kernel_density(kernel, grid_points)
-        densities.append(dens)
-    return jnp.stack(densities, axis=0)
-
-
-def credible_intervals(
-    densities: jax.Array,
-    alpha: float = 0.05,
-) -> Tuple[jax.Array, jax.Array, jax.Array]:
-    """
-    Compute pointwise credible intervals from bootstrap density samples.
-
-    Args:
-        densities: Array of shape (B, G)
-        alpha: Credible level (e.g. 0.05 for 95% intervals)
-
-    Returns:
-        (mean, lower, upper) each of shape (G,)
-    """
-    mean = jnp.mean(densities, axis=0)
-    lower = jnp.quantile(densities, alpha / 2.0, axis=0)
-    upper = jnp.quantile(densities, 1.0 - alpha / 2.0, axis=0)
-    return mean, lower, upper
-
-
-def compute_coverage(
-    true_density: jax.Array,
-    lower: jax.Array,
-    upper: jax.Array,
-) -> float:
-    """Compute coverage rate of true density within intervals."""
-    inside = (true_density >= lower) & (true_density <= upper)
-    return float(jnp.mean(inside))
-
-
-def bootstrap_coverage_for_measures(
-    measures: List[ParticleMeasure],
-    kernel,
-    grid_points: jax.Array,
-    true_density_vals: jax.Array,
-) -> float:
-    """Grid-based 95% credible-interval coverage of the true density."""
-    dens = hk_bootstrap_densities(measures, kernel, grid_points)
-    _, lower, upper = credible_intervals(dens, alpha=0.05)
-    return compute_coverage(true_density_vals, lower, upper)
 
 
 def build_bootstrap_true_density_grid(config: Dict) -> np.ndarray:
@@ -1002,27 +923,12 @@ def run_study_truncation_vs_continuation(config: Dict, key: jax.Array) -> jax.Ar
     continuation_factor = float(config["continuation_factor"])
     B = config["n_bootstrap"]
     prior, kernel = make_prior_and_kernel(config)
-    grid_points = build_density_grid(config)
-    true_density_vals = true_mixture_density(
-        grid_points,
-        config["true_means"],
-        config["true_stds"],
-        config["true_weights"],
-    )
-
-    n_sizes = len(n_data_list)
-    cov_hk_trunc = np.zeros(n_sizes)
-    cov_hk_cont = np.zeros(n_sizes)
-    cov_nh_trunc = np.zeros(n_sizes)
-    cov_nh_cont = np.zeros(n_sizes)
-    cov_nw_trunc = np.zeros(n_sizes)
-    cov_nw_cont = np.zeros(n_sizes)
 
     true_grid = build_bootstrap_true_density_grid(config)
     out_pdf = "bootstrap_truncation_vs_continuation.pdf"
 
     with PdfPages(out_pdf) as pdf:
-        for i, nd in enumerate(n_data_list):
+        for nd in n_data_list:
             cfg = dict(config)
             cfg["n_data"] = nd
             key, data_key, pp_key = jr.split(key, 3)
@@ -1074,15 +980,6 @@ def run_study_truncation_vs_continuation(config: Dict, key: jax.Array) -> jax.Ar
                         bootstrap_after_data_override=False,
                     )
                 )
-            cov_hk_trunc[i] = bootstrap_coverage_for_measures(
-                hk_t, kernel, grid_points, true_density_vals
-            )
-            cov_nh_trunc[i] = bootstrap_coverage_for_measures(
-                nh_t, kernel, grid_points, true_density_vals
-            )
-            cov_nw_trunc[i] = bootstrap_coverage_for_measures(
-                nw_t, kernel, grid_points, true_density_vals
-            )
 
             hk_c, nh_c, nw_c = [], [], []
             for _ in range(B):
@@ -1122,24 +1019,6 @@ def run_study_truncation_vs_continuation(config: Dict, key: jax.Array) -> jax.Ar
                         bootstrap_after_data_override=True,
                     )
                 )
-            cov_hk_cont[i] = bootstrap_coverage_for_measures(
-                hk_c, kernel, grid_points, true_density_vals
-            )
-            cov_nh_cont[i] = bootstrap_coverage_for_measures(
-                nh_c, kernel, grid_points, true_density_vals
-            )
-            cov_nw_cont[i] = bootstrap_coverage_for_measures(
-                nw_c, kernel, grid_points, true_density_vals
-            )
-
-            print(
-                f"    coverage trunc: HK={cov_hk_trunc[i]:.3f} NH={cov_nh_trunc[i]:.3f} "
-                f"NW={cov_nw_trunc[i]:.3f}"
-            )
-            print(
-                f"    coverage cont:  HK={cov_hk_cont[i]:.3f} NH={cov_nh_cont[i]:.3f} "
-                f"NW={cov_nw_cont[i]:.3f}"
-            )
 
             fig = plot_truncation_bootstrap_page(
                 cfg,
@@ -1170,23 +1049,12 @@ def run_study_prior_regularization(config: Dict, key: jax.Array) -> jax.Array:
     continuation_factor = float(config["continuation_factor"])
     B = config["n_bootstrap"]
     prior, kernel = make_prior_and_kernel(config)
-    grid_points = build_density_grid(config)
-    true_density_vals = true_mixture_density(
-        grid_points,
-        config["true_means"],
-        config["true_stds"],
-        config["true_weights"],
-    )
-
-    n_sizes = len(n_data_list)
-    cov_on = np.zeros(n_sizes)
-    cov_off = np.zeros(n_sizes)
 
     true_grid = build_bootstrap_true_density_grid(config)
     out_pdf = "bootstrap_prior_regularization.pdf"
 
     with PdfPages(out_pdf) as pdf:
-        for i, nd in enumerate(n_data_list):
+        for nd in n_data_list:
             cfg = dict(config)
             cfg["n_data"] = nd
             key, data_key, pp_key = jr.split(key, 3)
@@ -1224,13 +1092,6 @@ def run_study_prior_regularization(config: Dict, key: jax.Array) -> jax.Array:
                         use_prior_regularization=False,
                     )
                 )
-            cov_on[i] = bootstrap_coverage_for_measures(
-                hk_on, kernel, grid_points, true_density_vals
-            )
-            cov_off[i] = bootstrap_coverage_for_measures(
-                hk_off, kernel, grid_points, true_density_vals
-            )
-            print(f"    coverage prior on: {cov_on[i]:.3f}  prior off: {cov_off[i]:.3f}")
 
             fig = plot_prior_bootstrap_page(
                 cfg,

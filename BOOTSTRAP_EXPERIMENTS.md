@@ -21,7 +21,7 @@ Study **B** fixes continuation and toggles **Fisher–Rao prior regularization**
 
 ## Study A: Truncation vs index continuation
 
-**Goal:** For several sample sizes `n ∈ n_data_list`, see whether **stopping after one pass** over the bootstrap stream differs from **running longer** with **index continuation** after the stream ends.
+**Goal:** For several sample sizes `n ∈ n_data_list`, visualize how **stopping after one pass** over the bootstrap stream compares to **running longer** with **index continuation** (final particle locations on the true density).
 
 ### Conditions
 
@@ -34,7 +34,7 @@ Default `continuation_factor` is **2.0** (configurable).
 
 ### Flows compared
 
-For **each** `n` and **each** condition, the script runs **`n_bootstrap` replicates** and computes grid-based **95% credible interval coverage** of the **true** mixture density (same metric as elsewhere in the script):
+For **each** `n` and **each** condition, the script runs **`n_bootstrap` replicates** per cell; the PDF shows the **first** replicate’s final particles.
 
 - **HK** (Hellinger–Kantorovich: weight + atom updates)
 - **Newton–H** (Fisher–Rao / Hellinger on weights, fixed atoms)
@@ -46,8 +46,8 @@ For each `n`, a **new full dataset** of size `n` is simulated from the same true
 
 ### Output
 
-- **Plot**: `bootstrap_truncation_vs_continuation.pdf` — **multi-page PDF** (one page per sample size `n`). Each page is a **2×3** grid of panels: **true mixture density** (heatmap) + **training data** scatter + **final particles** (marker size ∝ weight). **Rows**: truncated run vs continuation; **columns**: HK, Newton–H, Newton–W (**colors**: teal, royal blue, crimson). The figure uses the **first** bootstrap replicate per cell for visualization; coverage below still uses all `n_bootstrap` replicates.
-- **Console**: per-`n` grid 95% CI **coverage** numbers for each flow and condition (unchanged metric).
+- **Plot**: `bootstrap_truncation_vs_continuation.pdf` — **multi-page PDF** (one page per `n`). Each page is a **2×3** grid: **true mixture density** (heatmap) + **bootstrap training data** scatter + **final particles** (size ∝ weight). **Rows**: truncated vs continuation; **columns**: HK, Newton–H, Newton–W (**colors**: teal, royal blue, crimson).
+- **Console**: progress only (sample sizes and step counts).
 
 ### CLI
 
@@ -62,7 +62,7 @@ Optional: `--n-data-list 50,100,200`, `--continuation-factor 2.0`, `--full`.
 
 ## Study B: HK Fisher–Rao prior regularization ON vs OFF
 
-**Goal:** For each `n ∈ n_data_list`, compare **HK only** with the **Sinkhorn-based prior term in the Fisher–Rao (Hellinger) weight update** turned **on** vs **off**, while **both** arms use **the same continuation schedule**.
+**Goal:** For each `n ∈ n_data_list`, visualize **HK only** with Fisher–Rao prior regularization **on** vs **off** (same continuation schedule for both).
 
 ### Schedule (both arms)
 
@@ -82,8 +82,8 @@ Newton–H and Newton–W **do not** implement this HK-specific term; Study B is
 
 ### Output
 
-- **Plot**: `bootstrap_prior_regularization.pdf` — **multi-page PDF** (one page per `n`). Each page has **two** panels (HK prior on vs off): true density heatmap + data + final particles (size ∝ weight), continuation schedule for both. Uses the **first** replicate per arm for the figure; coverage on the console uses all replicates.
-- **Console**: per-`n` coverage for each arm.
+- **Plot**: `bootstrap_prior_regularization.pdf` — **multi-page PDF** (one page per `n`). Two panels (prior on vs off): true density + data + final particles (size ∝ weight). **First** bootstrap replicate per arm.
+- **Console**: progress only.
 
 ### CLI
 
@@ -122,7 +122,7 @@ python bootstrap_experiment.py --study paw --n-data-list 200,500,1000 --k 200
 
 - **`--n-data`** — sample size **n** (paw study only).
 - **`--k`** — extra resampled steps for case **(c)** (paw study only).
-- **`--n-data-list`** — for **paw**, comma-separated **n** values → overlay PDFs; for Studies A/B, sample sizes for coverage curves (unchanged).
+- **`--n-data-list`** — for **paw**, comma-separated **n** values → overlay PDFs; for Studies A/B, sample sizes for each PDF page.
 
 ---
 
@@ -132,7 +132,7 @@ python bootstrap_experiment.py --study paw --n-data-list 200,500,1000 --k 200
 |------------|------|
 | `n_data_list` / `--n-data-list` | Sample sizes for Studies A and B; for **paw**, overlay sweep |
 | `continuation_factor` / `--continuation-factor` | Continuation length multiplier (A/B only) |
-| `n_bootstrap` | Replicates per cell (default **1** for speed; increase for stable intervals) |
+| `n_bootstrap` | Replicates per cell (default **1**); PDFs show the **first** replicate only |
 | `use_prior_regularization` | Default `True` in config; Study B overrides per arm |
 | `prior_flow_weight`, `prior_mc_samples` | Strength and MC draws for HK prior term when enabled |
 | `--full` | Heavier defaults (more data, replicates, Sinkhorn work) |
