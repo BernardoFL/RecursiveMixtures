@@ -26,6 +26,7 @@ from recursive_mixtures import (
     GaussianPrior,
     MixturePrior,
     HellingerKantorovichFlow,
+    NewtonFlow,
 )
 from recursive_mixtures.utils import (
     generate_mixture_data,
@@ -47,6 +48,7 @@ def setup_experiment():
         # Flow parameters
         'n_particles': 100,
         'step_size': 0.1,
+        'newton_step_exponent': 0.6,
         'kernel_bandwidth': 0.8,
         'sinkhorn_reg': 0.05,
         'wasserstein_weight': 0.1,
@@ -162,6 +164,71 @@ def run_hk_flow(config):
     print(f"   Recorded {len(history)} snapshots")
     
     return measure, history, data, config
+
+
+def run_newton_flow(config):
+    """
+    Run the Newton flow with a decaying step-size schedule α_n = (n+1)^(-γ).
+    
+    This uses the same data and prior setup as the HK experiment but only
+    updates particle weights (atoms remain fixed).
+    """
+    print("\n" + "=" * 60)
+    print("Newton Flow Experiment (recursive mixing measure update)")
+    print("=" * 60)
+
+    key = jr.PRNGKey(config['seed'])
+
+    # Generate synthetic data
+    key, subkey = jr.split(key)
+    data, _ = generate_mixture_data(
+        subkey,
+        config['n_data'],
+        config['true_means'],
+        config['true_stds'],
+        config['true_weights'],
+    )
+    data = data.squeeze()  # (n_data,)
+
+    # Kernel and prior (same as HK)
+    kernel = GaussianKernel(bandwidth=config['kernel_bandwidth'])
+    prior = GaussianPrior(
+        mean=config['prior_mean'],
+        std=config['prior_std'],
+        dim=1,
+    )
+
+    # Initial particle measure
+    key, subkey = jr.split(key)
+    initial_atoms = prior.sample(subkey, config['n_particles'])
+    initial_measure = ParticleMeasure.initialize(initial_atoms)
+
+    # Define alpha schedule α_n = (n+1)^(-γ)
+    gamma = config.get('newton_step_exponent', 0.6)
+
+    def alpha_fn(n: int) -> float:
+        return float((n + 1) ** (-gamma))
+
+    flow = NewtonFlow(
+        kernel=kernel,
+        prior=prior,
+        step_size=config['step_size'],
+        alpha_fn=alpha_fn,
+    )
+
+    print(f"\nNewton flow with α_n = (n+1)^(-γ), γ = {gamma}")
+    print(f"   Using {config['n_data']} data points and {config['n_particles']} particles")
+
+    final_measure, history = flow.run(
+        initial_measure,
+        data,
+        key=None,
+        store_every=config['store_every'],
+    )
+
+    print(f"\nNewton flow completed. Final ESS: {final_measure.effective_sample_size():.1f}")
+
+    return final_measure, history, data, config
 
 
 def plot_results(final_measure, history, data, config):
@@ -425,11 +492,15 @@ def main():
     # Setup
     config = setup_experiment()
     
-    # Run experiment
+    # Run HK experiment
     final_measure, history, data, config = run_hk_flow(config)
+
+    # Also run Newton flow (weights-only recursive update) for comparison
+    newton_final, newton_history, newton_data, _ = run_newton_flow(config)
     
     # Compute diagnostics
     compute_diagnostics(final_measure, history, data, config)
+    compute_diagnostics(newton_final, newton_history, newton_data, config)
     
     # Plot results
     fig = plot_results(final_measure, history, data, config)
