@@ -1,6 +1,6 @@
 # Bootstrap flow experiments (LLM-oriented reference)
 
-This document describes the structured studies in [`bootstrap_experiment.py`](bootstrap_experiment.py): **A** and **B** use the bivariate Gaussian mixture with HK-only Bayesian-bootstrap replicates; **C (paw)** is a separate cat-paw HK comparison (same script, different target, no per-replicate bootstrap resampling).
+This document describes the structured studies in [`bootstrap_experiment.py`](bootstrap_experiment.py): **A** and **B** use the bivariate Gaussian mixture with HK-only Bayesian-bootstrap replicates.
 
 ## Reference figures in Git
 
@@ -12,8 +12,6 @@ When you change flow logic, defaults, or plotting code, **re-run** the matching 
 |-----|-----------------|
 | [`bootstrap_truncation_vs_continuation.pdf`](bootstrap_truncation_vs_continuation.pdf) | `python bootstrap_experiment.py --study truncation` |
 | [`bootstrap_prior_regularization.pdf`](bootstrap_prior_regularization.pdf) | `python bootstrap_experiment.py --study prior` |
-| `paw_hk_comparison.pdf` | `python bootstrap_experiment.py --study paw` |
-| `paw_hk_overlay_n{n}.pdf` | `python bootstrap_experiment.py --study paw --n-data-list 100,200 --k …` |
 
 ## Problem setup
 
@@ -100,51 +98,17 @@ python bootstrap_experiment.py --study prior
 
 ---
 
-## Study C: Cat-paw HK triple (``--study paw``)
-
-**Goal:** Same as the standalone [`metastability_experiment.py`](metastability_experiment.py) **paw HK** setup: **one** i.i.d. dataset from the **seven-component cat paw** mixture, **one** DP-based initial particle measure, then **three** HK runs on that fixed data:
-
-1. **(a)** **n** ordered steps, Fisher–Rao prior regularization **on**.
-2. **(b)** **n** ordered steps, prior regularization **off** (Sinkhorn atom drift unchanged).
-3. **(c)** **n + k** steps, prior **on**, with **uniform resampling** from the data after the first **n** observations (`bootstrap_after_data=True`).
-
-This path **does not** use the Bayesian bootstrap replicates from Studies A/B; it only shares the script entry point.
-
-### Output
-
-| File | When |
-|------|------|
-| `paw_hk_comparison.pdf` | Single **n** (default or `--n-data`): three panels (density + particles per case). |
-| `paw_hk_overlay_n{n}.pdf` | `--n-data-list n1,n2,...`: one **overlay** figure per **n** (all three particle sets on one heatmap; no data scatter). |
-
-If both `--n-data` and `--n-data-list` are passed, **`--n-data-list` wins** (overlay sweep only).
-
-### CLI
-
-```bash
-python bootstrap_experiment.py --study paw
-python bootstrap_experiment.py --study paw --n-data 500 --k 100
-python bootstrap_experiment.py --study paw --n-data-list 200,500,1000 --k 200
-```
-
-- **`--n-data`** — sample size **n** (paw study only; ignored for `truncation`/`prior`/`both`).
-- **`--k`** — extra resampled steps for case **(c)** (paw study only; ignored for `truncation`/`prior`/`both`).
-- **`--n-data-list`** — for **paw**, comma-separated **n** values → overlay PDFs; for Studies A/B, sample sizes for each PDF page.
-
----
-
 ## Configuration quick reference
 
 | Key / flag | Role |
 |------------|------|
-| `n_data_list` / `--n-data-list` | Sample sizes for Studies A and B; for **paw**, overlay sweep |
+| `n_data_list` / `--n-data-list` | Sample sizes for Studies A and B |
 | `continuation_factor` / `--continuation-factor` | Continuation length multiplier (A/B only) |
 | `n_bootstrap` | Replicates per cell (default **1**); PDFs show the **first** replicate only |
 | `use_prior_regularization` | Default `True` in config; Study B overrides per arm |
 | `prior_flow_weight`, `prior_mc_samples` | Strength and MC draws for HK prior term when enabled |
 | `--full` | Heavier defaults (more data, replicates, Sinkhorn work) |
-| `--study` | `truncation` \| `prior` \| `both` \| `paw` (default `both`) |
-| `--n-data`, `--k` | Paw study only: **n** and continuation **k** for case (c) |
+| `--study` | `truncation` \| `prior` \| `both` (default `both`) |
 
 ---
 
@@ -154,7 +118,6 @@ python bootstrap_experiment.py --study paw --n-data-list 200,500,1000 --k 200
 |------|---------|
 | `bootstrap_truncation_vs_continuation.pdf` | Study A — multi-page HK truncated vs continuation (1×2 per page) |
 | `bootstrap_prior_regularization.pdf` | Study B — multi-page HK prior on vs off (1×2 per page, same style as A) |
-| `paw_hk_comparison.pdf` / `paw_hk_overlay_n{n}.pdf` | Study C (paw) |
 
 ---
 
