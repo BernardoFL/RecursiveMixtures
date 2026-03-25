@@ -2,6 +2,19 @@
 
 This document describes the structured studies in [`bootstrap_experiment.py`](bootstrap_experiment.py): **A** and **B** use the bivariate Gaussian mixture and Bayesian bootstrap; **C (paw)** is a separate cat-paw HK comparison (same script, different target and no per-replicate bootstrap resampling).
 
+## Reference figures in Git
+
+Selected PDF outputs are **committed to the repository** as reference artifacts (see [`.gitignore`](.gitignore): general `*.pdf` is ignored, but these names are negated). **Acknowledge them as outputs of this codebase**, not hand-drawn figures.
+
+When you change flow logic, defaults, or plotting code, **re-run** the matching command below and **commit the refreshed PDFs** so the tracked figures stay consistent with the implementation.
+
+| PDF | Example command |
+|-----|-----------------|
+| [`bootstrap_truncation_vs_continuation.pdf`](bootstrap_truncation_vs_continuation.pdf) | `python bootstrap_experiment.py --study truncation` |
+| [`bootstrap_prior_regularization.pdf`](bootstrap_prior_regularization.pdf) | `python bootstrap_experiment.py --study prior` |
+| `paw_hk_comparison.pdf` | `python bootstrap_experiment.py --study paw` |
+| `paw_hk_overlay_n{n}.pdf` | `python bootstrap_experiment.py --study paw --n-data-list 100,200 --k …` |
+
 ## Problem setup
 
 - **Target**: A fixed **bivariate Gaussian mixture** (three components). True parameters live in `setup_config()` (`true_means`, `true_stds`, `true_weights`).
