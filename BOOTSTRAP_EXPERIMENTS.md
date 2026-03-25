@@ -1,6 +1,6 @@
 # Bootstrap flow experiments (LLM-oriented reference)
 
-This document describes the structured studies in [`bootstrap_experiment.py`](bootstrap_experiment.py): **A** and **B** use the bivariate Gaussian mixture and Bayesian bootstrap; **C (paw)** is a separate cat-paw HK comparison (same script, different target and no per-replicate bootstrap resampling).
+This document describes the structured studies in [`bootstrap_experiment.py`](bootstrap_experiment.py): **A** and **B** use the bivariate Gaussian mixture with HK-only Bayesian-bootstrap replicates; **C (paw)** is a separate cat-paw HK comparison (same script, different target, no per-replicate bootstrap resampling).
 
 ## Reference figures in Git
 
@@ -65,7 +65,7 @@ python bootstrap_experiment.py --study truncation
 python bootstrap_experiment.py --study both   # runs A then B
 ```
 
-Optional: `--n-data-list 50,100,200`, `--continuation-factor 2.0`, `--full`.
+Optional: `--n-data-list 50,100,200`, `--continuation-factor 2.0`, `--full` (changes default list from `[50,100,200]` to `[200,500,1000]`, raises `grid_size`, `prior_mc_samples`, and `sinkhorn_num_iters`).
 
 ---
 
@@ -127,8 +127,8 @@ python bootstrap_experiment.py --study paw --n-data 500 --k 100
 python bootstrap_experiment.py --study paw --n-data-list 200,500,1000 --k 200
 ```
 
-- **`--n-data`** — sample size **n** (paw study only).
-- **`--k`** — extra resampled steps for case **(c)** (paw study only).
+- **`--n-data`** — sample size **n** (paw study only; ignored for `truncation`/`prior`/`both`).
+- **`--k`** — extra resampled steps for case **(c)** (paw study only; ignored for `truncation`/`prior`/`both`).
 - **`--n-data-list`** — for **paw**, comma-separated **n** values → overlay PDFs; for Studies A/B, sample sizes for each PDF page.
 
 ---
