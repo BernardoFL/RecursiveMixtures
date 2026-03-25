@@ -46,8 +46,8 @@ For each `n`, a **new full dataset** of size `n` is simulated from the same true
 
 ### Output
 
-- **Plot**: `bootstrap_truncation_vs_continuation.pdf` — coverage vs `n` with **solid** = truncated, **dashed** = continuation, **colors**: HK teal, Newton–H royal blue, Newton–W crimson.
-- **Console**: per-`n` coverage numbers for each flow and condition.
+- **Plot**: `bootstrap_truncation_vs_continuation.pdf` — **multi-page PDF** (one page per sample size `n`). Each page is a **2×3** grid of panels: **true mixture density** (heatmap) + **training data** scatter + **final particles** (marker size ∝ weight). **Rows**: truncated run vs continuation; **columns**: HK, Newton–H, Newton–W (**colors**: teal, royal blue, crimson). The figure uses the **first** bootstrap replicate per cell for visualization; coverage below still uses all `n_bootstrap` replicates.
+- **Console**: per-`n` grid 95% CI **coverage** numbers for each flow and condition (unchanged metric).
 
 ### CLI
 
@@ -82,7 +82,7 @@ Newton–H and Newton–W **do not** implement this HK-specific term; Study B is
 
 ### Output
 
-- **Plot**: `bootstrap_prior_regularization.pdf` — coverage vs `n`, two curves (prior on / prior off).
+- **Plot**: `bootstrap_prior_regularization.pdf` — **multi-page PDF** (one page per `n`). Each page has **two** panels (HK prior on vs off): true density heatmap + data + final particles (size ∝ weight), continuation schedule for both. Uses the **first** replicate per arm for the figure; coverage on the console uses all replicates.
 - **Console**: per-`n` coverage for each arm.
 
 ### CLI
@@ -145,8 +145,8 @@ python bootstrap_experiment.py --study paw --n-data-list 200,500,1000 --k 200
 
 | File | Content |
 |------|---------|
-| `bootstrap_truncation_vs_continuation.pdf` | Study A |
-| `bootstrap_prior_regularization.pdf` | Study B |
+| `bootstrap_truncation_vs_continuation.pdf` | Study A — multi-page heatmaps + particles (2×3 per page) |
+| `bootstrap_prior_regularization.pdf` | Study B — multi-page heatmaps + HK particles (1×2 per page) |
 | `paw_hk_comparison.pdf` / `paw_hk_overlay_n{n}.pdf` | Study C (paw) |
 
 ---

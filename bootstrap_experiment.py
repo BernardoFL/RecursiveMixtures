@@ -18,14 +18,15 @@ optional ``--n-data-list`` overlay sweeps (see ``--study paw``).
 from __future__ import annotations
 
 import argparse
-from typing import Dict, List, Optional, Tuple
 import time
+from typing import Dict, List, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
 import jax.random as jr
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.backends.backend_pdf import PdfPages
 
 from recursive_mixtures import (
     DirichletProcessPrior,
@@ -461,57 +462,148 @@ def bootstrap_coverage_for_measures(
     return compute_coverage(true_density_vals, lower, upper)
 
 
-def plot_truncation_vs_continuation(
-    n_data_list: List[int],
-    cov_hk_trunc: np.ndarray,
-    cov_hk_cont: np.ndarray,
-    cov_nh_trunc: np.ndarray,
-    cov_nh_cont: np.ndarray,
-    cov_nw_trunc: np.ndarray,
-    cov_nw_cont: np.ndarray,
-    out_path: str = "bootstrap_truncation_vs_continuation.pdf",
-) -> None:
-    """Line plot: coverage vs sample size for truncated vs continued runs."""
-    xs = np.asarray(n_data_list, dtype=float)
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot(xs, cov_hk_trunc, "o-", color="teal", label="HK (stop after data)")
-    ax.plot(xs, cov_hk_cont, "s--", color="teal", alpha=0.85, label="HK (continuation)")
-    ax.plot(xs, cov_nh_trunc, "o-", color="royalblue", label="Newton-H (stop after data)")
-    ax.plot(xs, cov_nh_cont, "s--", color="royalblue", alpha=0.85, label="Newton-H (continuation)")
-    ax.plot(xs, cov_nw_trunc, "o-", color="crimson", label="Newton-W (stop after data)")
-    ax.plot(xs, cov_nw_cont, "s--", color="crimson", alpha=0.85, label="Newton-W (continuation)")
-    ax.set_xlabel("Sample size $n$")
-    ax.set_ylabel("Grid 95% CI coverage of true density")
-    ax.set_title("Truncated run vs index continuation (Bayesian bootstrap per replicate)")
-    ax.legend(loc="best", fontsize=8)
-    ax.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(out_path, bbox_inches="tight")
-    plt.close(fig)
-
-
-def plot_prior_regularization_study(
-    n_data_list: List[int],
-    cov_prior_on: np.ndarray,
-    cov_prior_off: np.ndarray,
-    out_path: str = "bootstrap_prior_regularization.pdf",
-) -> None:
-    """HK only: Fisher–Rao prior term on vs off, both with continuation."""
-    xs = np.asarray(n_data_list, dtype=float)
-    fig, ax = plt.subplots(figsize=(7, 4.5))
-    ax.plot(xs, cov_prior_on, "o-", color="teal", label="Prior regularization on")
-    ax.plot(xs, cov_prior_off, "s--", color="dimgray", label="Prior regularization off")
-    ax.set_xlabel("Sample size $n$")
-    ax.set_ylabel("Grid 95% CI coverage of true density")
-    ax.set_title(
-        "HK flow: Fisher–Rao prior term (both runs use index continuation; "
-        "atom Sinkhorn drift unchanged)"
+def build_bootstrap_true_density_grid(config: Dict) -> np.ndarray:
+    """True mixture density on a 2D grid for imshow (same mixture as data generation)."""
+    n = int(config["grid_size"])
+    xs = jnp.linspace(config["grid_min"], config["grid_max"], n)
+    ys = jnp.linspace(config["grid_min"], config["grid_max"], n)
+    X, Y = jnp.meshgrid(xs, ys)
+    grid_points = jnp.stack([X.ravel(), Y.ravel()], axis=1)
+    dens = true_mixture_density(
+        grid_points,
+        config["true_means"],
+        config["true_stds"],
+        config["true_weights"],
     )
-    ax.legend(loc="best")
-    ax.grid(True, alpha=0.3)
+    return np.asarray(dens.reshape(n, n))
+
+
+def _extent_from_config(config: Dict) -> List[float]:
+    return [
+        float(config["grid_min"]),
+        float(config["grid_max"]),
+        float(config["grid_min"]),
+        float(config["grid_max"]),
+    ]
+
+
+def _scatter_data_and_particles(
+    ax,
+    config: Dict,
+    data_np: np.ndarray,
+    measure: ParticleMeasure,
+    color: str,
+    *,
+    size_scale: float = 300.0,
+) -> None:
+    """True-density axes: training data + particles with marker size ∝ weight."""
+    ax.scatter(
+        data_np[:, 0],
+        data_np[:, 1],
+        s=12,
+        c="white",
+        edgecolors="black",
+        linewidths=0.35,
+        alpha=0.65,
+        zorder=2,
+    )
+    atoms = np.asarray(measure.atoms)
+    weights = np.asarray(measure.weights)
+    wmax = float(weights.max())
+    sizes = weights / max(wmax, 1e-12) * size_scale
+    ax.scatter(
+        atoms[:, 0],
+        atoms[:, 1],
+        s=sizes,
+        c=color,
+        alpha=0.88,
+        edgecolors="white",
+        linewidths=0.4,
+        zorder=3,
+    )
+    ax.set_xlim(config["grid_min"], config["grid_max"])
+    ax.set_ylim(config["grid_min"], config["grid_max"])
+    ax.set_xlabel("x₁")
+    ax.set_ylabel("x₂")
+
+
+def plot_truncation_bootstrap_page(
+    config: Dict,
+    true_grid: np.ndarray,
+    data: jax.Array,
+    hk_t: ParticleMeasure,
+    nh_t: ParticleMeasure,
+    nw_t: ParticleMeasure,
+    hk_c: ParticleMeasure,
+    nh_c: ParticleMeasure,
+    nw_c: ParticleMeasure,
+    n_data: int,
+    n_steps_cont: int,
+) -> plt.Figure:
+    """One figure: 2×3 panels — row 0 truncated, row 1 continuation; cols HK, NH, NW."""
+    extent = _extent_from_config(config)
+    data_np = np.asarray(data)
+    fig, axes = plt.subplots(2, 3, figsize=(16, 10), sharex=True, sharey=True)
+    rows = [
+        (f"Stop after data (n_steps = {n_data})", (hk_t, nh_t, nw_t)),
+        (f"Continuation (n_steps = {n_steps_cont})", (hk_c, nh_c, nw_c)),
+    ]
+    colors = ("teal", "royalblue", "crimson")
+    col_titles = ("HK", "Newton–H", "Newton–W")
+    for row_ax, (row_title, measures) in zip(axes, rows):
+        for ax, m, col_title, color in zip(row_ax, measures, col_titles, colors):
+            ax.imshow(
+                true_grid,
+                origin="lower",
+                extent=extent,
+                aspect="auto",
+                cmap="gray_r",
+            )
+            _scatter_data_and_particles(ax, config, data_np, m, color)
+            ax.set_title(f"{col_title}: {row_title}")
+    fig.suptitle(
+        f"True density + data + particles (size ∝ weight), n = {n_data}",
+        y=0.995,
+    )
     plt.tight_layout()
-    plt.savefig(out_path, bbox_inches="tight")
-    plt.close(fig)
+    return fig
+
+
+def plot_prior_bootstrap_page(
+    config: Dict,
+    true_grid: np.ndarray,
+    data: jax.Array,
+    hk_on: ParticleMeasure,
+    hk_off: ParticleMeasure,
+    n_data: int,
+    n_steps: int,
+) -> plt.Figure:
+    """One row: HK prior on vs prior off (continuation both)."""
+    extent = _extent_from_config(config)
+    data_np = np.asarray(data)
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5.5), sharey=True)
+    for ax, m, title, color in zip(
+        axes,
+        (hk_on, hk_off),
+        ("HK: prior regularization on", "HK: prior regularization off"),
+        ("teal", "dimgray"),
+    ):
+        ax.imshow(
+            true_grid,
+            origin="lower",
+            extent=extent,
+            aspect="auto",
+            cmap="gray_r",
+        )
+        _scatter_data_and_particles(ax, config, data_np, m, color)
+        ax.set_title(title)
+    fig.suptitle(
+        f"True density + data + particles (size ∝ weight), n = {n_data} "
+        f"(continuation; n_steps = {n_steps})",
+        y=1.02,
+    )
+    plt.tight_layout()
+    return fig
 
 
 # --- Cat-paw HK (metastability-style): same init + data, three HK regimes ---
@@ -926,135 +1018,146 @@ def run_study_truncation_vs_continuation(config: Dict, key: jax.Array) -> jax.Ar
     cov_nw_trunc = np.zeros(n_sizes)
     cov_nw_cont = np.zeros(n_sizes)
 
-    for i, nd in enumerate(n_data_list):
-        cfg = dict(config)
-        cfg["n_data"] = nd
-        key, data_key, pp_key = jr.split(key, 3)
-        data, _ = generate_bivariate_data(data_key, cfg)
-        prior_particles = prior.to_particle_measure(pp_key, cfg["n_particles"])
+    true_grid = build_bootstrap_true_density_grid(config)
+    out_pdf = "bootstrap_truncation_vs_continuation.pdf"
 
-        n_steps_trunc = nd
-        n_steps_cont = int(np.ceil(continuation_factor * nd))
-        print(
-            f"  n_data={nd}: truncated n_steps={n_steps_trunc}, "
-            f"continuation n_steps={n_steps_cont} (factor={continuation_factor})"
-        )
+    with PdfPages(out_pdf) as pdf:
+        for i, nd in enumerate(n_data_list):
+            cfg = dict(config)
+            cfg["n_data"] = nd
+            key, data_key, pp_key = jr.split(key, 3)
+            data, _ = generate_bivariate_data(data_key, cfg)
+            prior_particles = prior.to_particle_measure(pp_key, cfg["n_particles"])
 
-        hk_t, nh_t, nw_t = [], [], []
-        for _ in range(B):
-            key, key_hk, key_nh, key_nw = jr.split(key, 4)
-            hk_t.append(
-                run_single_hk_replicate(
-                    key_hk,
-                    data,
-                    prior,
-                    kernel,
-                    prior_particles,
-                    cfg,
-                    n_steps_override=n_steps_trunc,
-                    bootstrap_after_data_override=False,
-                )
+            n_steps_trunc = nd
+            n_steps_cont = int(np.ceil(continuation_factor * nd))
+            print(
+                f"  n_data={nd}: truncated n_steps={n_steps_trunc}, "
+                f"continuation n_steps={n_steps_cont} (factor={continuation_factor})"
             )
-            nh_t.append(
-                run_single_newton_h_replicate(
-                    key_nh,
-                    data,
-                    prior,
-                    kernel,
-                    cfg,
-                    n_steps_override=n_steps_trunc,
-                    bootstrap_after_data_override=False,
-                )
-            )
-            nw_t.append(
-                run_single_newton_w_replicate(
-                    key_nw,
-                    data,
-                    prior,
-                    kernel,
-                    prior_particles,
-                    cfg,
-                    n_steps_override=n_steps_trunc,
-                    bootstrap_after_data_override=False,
-                )
-            )
-        cov_hk_trunc[i] = bootstrap_coverage_for_measures(
-            hk_t, kernel, grid_points, true_density_vals
-        )
-        cov_nh_trunc[i] = bootstrap_coverage_for_measures(
-            nh_t, kernel, grid_points, true_density_vals
-        )
-        cov_nw_trunc[i] = bootstrap_coverage_for_measures(
-            nw_t, kernel, grid_points, true_density_vals
-        )
 
-        hk_c, nh_c, nw_c = [], [], []
-        for _ in range(B):
-            key, key_hk, key_nh, key_nw = jr.split(key, 4)
-            hk_c.append(
-                run_single_hk_replicate(
-                    key_hk,
-                    data,
-                    prior,
-                    kernel,
-                    prior_particles,
-                    cfg,
-                    n_steps_override=n_steps_cont,
-                    bootstrap_after_data_override=True,
+            hk_t, nh_t, nw_t = [], [], []
+            for _ in range(B):
+                key, key_hk, key_nh, key_nw = jr.split(key, 4)
+                hk_t.append(
+                    run_single_hk_replicate(
+                        key_hk,
+                        data,
+                        prior,
+                        kernel,
+                        prior_particles,
+                        cfg,
+                        n_steps_override=n_steps_trunc,
+                        bootstrap_after_data_override=False,
+                    )
                 )
-            )
-            nh_c.append(
-                run_single_newton_h_replicate(
-                    key_nh,
-                    data,
-                    prior,
-                    kernel,
-                    cfg,
-                    n_steps_override=n_steps_cont,
-                    bootstrap_after_data_override=True,
+                nh_t.append(
+                    run_single_newton_h_replicate(
+                        key_nh,
+                        data,
+                        prior,
+                        kernel,
+                        cfg,
+                        n_steps_override=n_steps_trunc,
+                        bootstrap_after_data_override=False,
+                    )
                 )
-            )
-            nw_c.append(
-                run_single_newton_w_replicate(
-                    key_nw,
-                    data,
-                    prior,
-                    kernel,
-                    prior_particles,
-                    cfg,
-                    n_steps_override=n_steps_cont,
-                    bootstrap_after_data_override=True,
+                nw_t.append(
+                    run_single_newton_w_replicate(
+                        key_nw,
+                        data,
+                        prior,
+                        kernel,
+                        prior_particles,
+                        cfg,
+                        n_steps_override=n_steps_trunc,
+                        bootstrap_after_data_override=False,
+                    )
                 )
+            cov_hk_trunc[i] = bootstrap_coverage_for_measures(
+                hk_t, kernel, grid_points, true_density_vals
             )
-        cov_hk_cont[i] = bootstrap_coverage_for_measures(
-            hk_c, kernel, grid_points, true_density_vals
-        )
-        cov_nh_cont[i] = bootstrap_coverage_for_measures(
-            nh_c, kernel, grid_points, true_density_vals
-        )
-        cov_nw_cont[i] = bootstrap_coverage_for_measures(
-            nw_c, kernel, grid_points, true_density_vals
-        )
+            cov_nh_trunc[i] = bootstrap_coverage_for_measures(
+                nh_t, kernel, grid_points, true_density_vals
+            )
+            cov_nw_trunc[i] = bootstrap_coverage_for_measures(
+                nw_t, kernel, grid_points, true_density_vals
+            )
 
-        print(
-            f"    coverage trunc: HK={cov_hk_trunc[i]:.3f} NH={cov_nh_trunc[i]:.3f} "
-            f"NW={cov_nw_trunc[i]:.3f}"
-        )
-        print(
-            f"    coverage cont:  HK={cov_hk_cont[i]:.3f} NH={cov_nh_cont[i]:.3f} "
-            f"NW={cov_nw_cont[i]:.3f}"
-        )
+            hk_c, nh_c, nw_c = [], [], []
+            for _ in range(B):
+                key, key_hk, key_nh, key_nw = jr.split(key, 4)
+                hk_c.append(
+                    run_single_hk_replicate(
+                        key_hk,
+                        data,
+                        prior,
+                        kernel,
+                        prior_particles,
+                        cfg,
+                        n_steps_override=n_steps_cont,
+                        bootstrap_after_data_override=True,
+                    )
+                )
+                nh_c.append(
+                    run_single_newton_h_replicate(
+                        key_nh,
+                        data,
+                        prior,
+                        kernel,
+                        cfg,
+                        n_steps_override=n_steps_cont,
+                        bootstrap_after_data_override=True,
+                    )
+                )
+                nw_c.append(
+                    run_single_newton_w_replicate(
+                        key_nw,
+                        data,
+                        prior,
+                        kernel,
+                        prior_particles,
+                        cfg,
+                        n_steps_override=n_steps_cont,
+                        bootstrap_after_data_override=True,
+                    )
+                )
+            cov_hk_cont[i] = bootstrap_coverage_for_measures(
+                hk_c, kernel, grid_points, true_density_vals
+            )
+            cov_nh_cont[i] = bootstrap_coverage_for_measures(
+                nh_c, kernel, grid_points, true_density_vals
+            )
+            cov_nw_cont[i] = bootstrap_coverage_for_measures(
+                nw_c, kernel, grid_points, true_density_vals
+            )
 
-    plot_truncation_vs_continuation(
-        n_data_list,
-        cov_hk_trunc,
-        cov_hk_cont,
-        cov_nh_trunc,
-        cov_nh_cont,
-        cov_nw_trunc,
-        cov_nw_cont,
-    )
-    print("\nSaved 'bootstrap_truncation_vs_continuation.pdf'.")
+            print(
+                f"    coverage trunc: HK={cov_hk_trunc[i]:.3f} NH={cov_nh_trunc[i]:.3f} "
+                f"NW={cov_nw_trunc[i]:.3f}"
+            )
+            print(
+                f"    coverage cont:  HK={cov_hk_cont[i]:.3f} NH={cov_nh_cont[i]:.3f} "
+                f"NW={cov_nw_cont[i]:.3f}"
+            )
+
+            fig = plot_truncation_bootstrap_page(
+                cfg,
+                true_grid,
+                data,
+                hk_t[0],
+                nh_t[0],
+                nw_t[0],
+                hk_c[0],
+                nh_c[0],
+                nw_c[0],
+                nd,
+                n_steps_cont,
+            )
+            pdf.savefig(fig, bbox_inches="tight")
+            plt.close(fig)
+
+    print(f"\nSaved multi-page '{out_pdf}' (heatmap + particles per method, one page per n).")
     return key
 
 
@@ -1079,54 +1182,69 @@ def run_study_prior_regularization(config: Dict, key: jax.Array) -> jax.Array:
     cov_on = np.zeros(n_sizes)
     cov_off = np.zeros(n_sizes)
 
-    for i, nd in enumerate(n_data_list):
-        cfg = dict(config)
-        cfg["n_data"] = nd
-        key, data_key, pp_key = jr.split(key, 3)
-        data, _ = generate_bivariate_data(data_key, cfg)
-        prior_particles = prior.to_particle_measure(pp_key, cfg["n_particles"])
-        n_steps = int(np.ceil(continuation_factor * nd))
-        print(f"  n_data={nd}, continuation n_steps={n_steps}")
+    true_grid = build_bootstrap_true_density_grid(config)
+    out_pdf = "bootstrap_prior_regularization.pdf"
 
-        hk_on, hk_off = [], []
-        for _ in range(B):
-            key, key_on, key_off = jr.split(key, 3)
-            hk_on.append(
-                run_single_hk_replicate(
-                    key_on,
-                    data,
-                    prior,
-                    kernel,
-                    prior_particles,
-                    cfg,
-                    n_steps_override=n_steps,
-                    bootstrap_after_data_override=True,
-                    use_prior_regularization=True,
-                )
-            )
-            hk_off.append(
-                run_single_hk_replicate(
-                    key_off,
-                    data,
-                    prior,
-                    kernel,
-                    prior_particles,
-                    cfg,
-                    n_steps_override=n_steps,
-                    bootstrap_after_data_override=True,
-                    use_prior_regularization=False,
-                )
-            )
-        cov_on[i] = bootstrap_coverage_for_measures(
-            hk_on, kernel, grid_points, true_density_vals
-        )
-        cov_off[i] = bootstrap_coverage_for_measures(
-            hk_off, kernel, grid_points, true_density_vals
-        )
-        print(f"    coverage prior on: {cov_on[i]:.3f}  prior off: {cov_off[i]:.3f}")
+    with PdfPages(out_pdf) as pdf:
+        for i, nd in enumerate(n_data_list):
+            cfg = dict(config)
+            cfg["n_data"] = nd
+            key, data_key, pp_key = jr.split(key, 3)
+            data, _ = generate_bivariate_data(data_key, cfg)
+            prior_particles = prior.to_particle_measure(pp_key, cfg["n_particles"])
+            n_steps = int(np.ceil(continuation_factor * nd))
+            print(f"  n_data={nd}, continuation n_steps={n_steps}")
 
-    plot_prior_regularization_study(n_data_list, cov_on, cov_off)
-    print("\nSaved 'bootstrap_prior_regularization.pdf'.")
+            hk_on, hk_off = [], []
+            for _ in range(B):
+                key, key_on, key_off = jr.split(key, 3)
+                hk_on.append(
+                    run_single_hk_replicate(
+                        key_on,
+                        data,
+                        prior,
+                        kernel,
+                        prior_particles,
+                        cfg,
+                        n_steps_override=n_steps,
+                        bootstrap_after_data_override=True,
+                        use_prior_regularization=True,
+                    )
+                )
+                hk_off.append(
+                    run_single_hk_replicate(
+                        key_off,
+                        data,
+                        prior,
+                        kernel,
+                        prior_particles,
+                        cfg,
+                        n_steps_override=n_steps,
+                        bootstrap_after_data_override=True,
+                        use_prior_regularization=False,
+                    )
+                )
+            cov_on[i] = bootstrap_coverage_for_measures(
+                hk_on, kernel, grid_points, true_density_vals
+            )
+            cov_off[i] = bootstrap_coverage_for_measures(
+                hk_off, kernel, grid_points, true_density_vals
+            )
+            print(f"    coverage prior on: {cov_on[i]:.3f}  prior off: {cov_off[i]:.3f}")
+
+            fig = plot_prior_bootstrap_page(
+                cfg,
+                true_grid,
+                data,
+                hk_on[0],
+                hk_off[0],
+                nd,
+                n_steps,
+            )
+            pdf.savefig(fig, bbox_inches="tight")
+            plt.close(fig)
+
+    print(f"\nSaved multi-page '{out_pdf}' (heatmap + HK particles, one page per n).")
     return key
 
 
