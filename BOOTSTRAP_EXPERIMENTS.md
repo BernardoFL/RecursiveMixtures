@@ -1,7 +1,11 @@
-# Bootstrap flow experiments (LLM-oriented reference)
+# HK computational choices experiment (LLM-oriented reference)
 
-This document describes [`bootstrap_experiment.py`](bootstrap_experiment.py) as a
-comparison of two computational choices in HK flow updates:
+> **File renamed.** This document now tracks
+> [`hk_computational_choices.py`](hk_computational_choices.py). See
+> [`HK_COMPUTATIONAL_CHOICES.md`](HK_COMPUTATIONAL_CHOICES.md) for the full
+> up-to-date reference.
+
+This experiment compares two computational switches in the HK (WFR) flow:
 
 1. Fisher-Rao prior regularization: **on/off**
 2. Bootstrap continuation after the ordered pass: **on/off**
@@ -14,8 +18,8 @@ When you change flow logic, defaults, or plotting code, **re-run** the matching 
 
 | PDF | Example command |
 |-----|-----------------|
-| [`bootstrap_truncation_vs_continuation.pdf`](bootstrap_truncation_vs_continuation.pdf) | `python bootstrap_experiment.py --study truncation` |
-| [`bootstrap_prior_regularization.pdf`](bootstrap_prior_regularization.pdf) | `python bootstrap_experiment.py --study prior` |
+| [`bootstrap_truncation_vs_continuation.pdf`](bootstrap_truncation_vs_continuation.pdf) | `python hk_computational_choices.py --study truncation` |
+| [`bootstrap_prior_regularization.pdf`](bootstrap_prior_regularization.pdf) | `python hk_computational_choices.py --study prior` |
 
 ## Problem setup
 
@@ -46,9 +50,9 @@ data source fixed.
 ## CLI
 
 ```bash
-python bootstrap_experiment.py --study truncation
-python bootstrap_experiment.py --study prior
-python bootstrap_experiment.py --study both
+python hk_computational_choices.py --study truncation
+python hk_computational_choices.py --study prior
+python hk_computational_choices.py --study both
 ```
 
 ---
@@ -79,7 +83,7 @@ python bootstrap_experiment.py --study both
 
 ## Implementation pointers
 
-- Study runners: `run_study_truncation_vs_continuation`, `run_study_prior_regularization` in [`bootstrap_experiment.py`](bootstrap_experiment.py).
+- Study runners: `run_study_truncation_vs_continuation`, `run_study_prior_regularization` in [`hk_computational_choices.py`](hk_computational_choices.py).
 - Per-replicate overrides: `n_steps_override`, `bootstrap_after_data_override`, `use_prior_regularization` on `run_single_hk_replicate`.
 - Index continuation logic: `_prepare_run` in [`recursive_mixtures/flows.py`](recursive_mixtures/flows.py).
 - Prior term gate: `HellingerKantorovichFlow.use_prior_regularization` and `need_mc` in `step`.

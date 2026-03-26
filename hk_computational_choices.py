@@ -1,13 +1,20 @@
 #!/usr/bin/env python3
 """
-Bootstrap resampling for the particle Hellinger–Kantorovich (HK) flow on a
-bivariate Gaussian mixture.
+Computational choices experiment for the HK (WFR) flow on a bivariate Gaussian
+mixture.
 
-Each replicate draws Bayesian bootstrap weights, builds a resampled data stream,
-and runs HK. Study **truncation** saves a multi-page PDF (one 1×2 page per sample
-size). Study **prior** saves a single-page **N×2** grid (one row per `n` in `n_data_list`;
-columns: prior on | prior off): true-density heatmaps with final HK particles
-only (marker size ∝ weight, no training data scatter).
+Isolates the effect of two algorithmic switches:
+
+    Study A — Bootstrap continuation on/off
+        Compare stopping after exactly one ordered pass over the data vs running
+        extra steps where data indices are resampled uniformly ("continuation").
+
+    Study B — Fisher-Rao prior regularization on/off
+        Compare HK with and without the Sinkhorn prior functional contributing
+        to the Hellinger weight update (``use_prior_regularization``).
+
+Both studies use a Pitman–Yor mixing prior on atom locations and produce
+true-density heatmap panels with final HK particles (size ∝ weight).
 """
 
 from __future__ import annotations
@@ -369,7 +376,7 @@ def plot_prior_regularization_grid(
 def run_study_truncation_vs_continuation(config: Dict, key: jax.Array) -> jax.Array:
     """Compare stopping after one pass vs extra steps with index continuation."""
     print("=" * 80)
-    print("Study A: stop after data vs index continuation (per sample size)")
+    print("Study A: bootstrap continuation on vs off (per sample size)")
     print("=" * 80)
     n_data_list = list(config["n_data_list"])
     continuation_factor = float(config["continuation_factor"])
@@ -433,14 +440,14 @@ def run_study_truncation_vs_continuation(config: Dict, key: jax.Array) -> jax.Ar
             pdf.savefig(fig, bbox_inches="tight")
             plt.close(fig)
 
-    print(f"\nSaved multi-page '{out_pdf}' (HK: truncation vs continuation, one page per n).")
+    print(f"\nSaved multi-page '{out_pdf}' (HK: continuation on vs off, one page per n).")
     return key
 
 
 def run_study_prior_regularization(config: Dict, key: jax.Array) -> jax.Array:
     """HK only: Fisher–Rao prior on vs off with continuation disabled in both arms."""
     print("=" * 80)
-    print("Study B: HK with Fisher–Rao prior regularization on vs off (no continuation)")
+    print("Study B: Fisher-Rao prior regularization on vs off (no continuation)")
     print("=" * 80)
     n_data_list = list(config["n_data_list"])
     B = config["n_bootstrap"]
@@ -498,7 +505,8 @@ def run_study_prior_regularization(config: Dict, key: jax.Array) -> jax.Array:
     plt.close(fig)
 
     print(
-        f"\nSaved '{out_pdf}' (HK: {len(n_data_list)}×2 grid, one row per n, prior on|off)."
+        f"\nSaved '{out_pdf}' (HK: {len(n_data_list)}×2 grid, "
+        "rows = sample sizes, cols = prior on | off)."
     )
     return key
 
@@ -533,7 +541,9 @@ if __name__ == "__main__":
     except Exception:
         pass
 
-    parser = argparse.ArgumentParser(description="Bootstrap flow comparison experiment")
+    parser = argparse.ArgumentParser(
+        description="HK computational choices: prior on/off and bootstrap continuation on/off"
+    )
     parser.add_argument(
         "--full",
         action="store_true",
