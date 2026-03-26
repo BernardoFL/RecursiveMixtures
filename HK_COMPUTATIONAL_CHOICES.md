@@ -23,8 +23,8 @@ command below and **commit the refreshed PDFs**.
 
 ## Problem setup
 
-- **Target**: A fixed **bivariate Gaussian mixture** (three components). True
-  parameters live in `setup_config()` (`true_means`, `true_stds`, `true_weights`).
+- **Target**: The **Rosenbrock distribution**. Parameters live in
+  `setup_config()` (`rosen_a`, `rosen_b`, `rosen_sigma`).
 - **Observed data**: i.i.d. samples of size `n_data` (varies per study when
   using `n_data_list`).
 - **Flow**: `HellingerKantorovichFlow` with a Pitman–Yor mixing prior

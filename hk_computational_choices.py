@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Computational choices experiment for the HK (WFR) flow on a bivariate Gaussian
-mixture.
+Computational choices experiment for the HK (WFR) flow on the Rosenbrock
+distribution.
 
 Isolates the effect of two algorithmic switches:
 
@@ -37,11 +37,9 @@ from recursive_mixtures import (
     GaussianPrior,
     HellingerKantorovichFlow,
 )
-from recursive_mixtures.utils import (
-    bayesian_bootstrap,
-    generate_mixture_data,
-    true_mixture_density,
-)
+from recursive_mixtures.utils import bayesian_bootstrap
+
+from rosenbrock_distribution import RosenbrockDistribution
 
 
 
@@ -53,16 +51,11 @@ def setup_config(fast: bool = True) -> Dict:
     """
     # Fast defaults: fewer steps and Sinkhorn work so runs complete in minutes
     config = {
-        # True bivariate mixture parameters
-        "true_means": jnp.array(
-            [
-                [-2.0, -2.0],
-                [0.0, 2.0],
-                [2.5, -1.0],
-            ]
-        ),
-        "true_stds": jnp.array([0.6, 0.8, 0.5]),
-        "true_weights": jnp.array([0.3, 0.4, 0.3]),
+        # Rosenbrock distribution parameters
+        # Samples concentrate near the valley y = x^2.
+        "rosen_a": 1.0,
+        "rosen_b": 5.0,
+        "rosen_sigma": 1.0,
         # Data
         "n_data": 200 if fast else 1000,
         # Flow parameters
@@ -102,20 +95,17 @@ def setup_config(fast: bool = True) -> Dict:
     return config
 
 
-def generate_bivariate_data(
+def generate_rosenbrock_data(
     key: jax.Array,
     config: Dict,
-) -> Tuple[jax.Array, jax.Array]:
-    """Generate 2D Gaussian mixture data and assignments."""
-    samples, assignments = generate_mixture_data(
-        key,
-        config["n_data"],
-        config["true_means"],
-        config["true_stds"],
-        config["true_weights"],
+) -> jax.Array:
+    """Sample n i.i.d. points from the Rosenbrock distribution."""
+    rosen = RosenbrockDistribution(
+        a=float(config["rosen_a"]),
+        b=float(config["rosen_b"]),
+        sigma=float(config["rosen_sigma"]),
     )
-    # samples shape: (n_data, 2)
-    return samples, assignments
+    return rosen.sample(key, int(config["n_data"]))
 
 
 def make_prior_and_kernel(config: Dict):
@@ -232,18 +222,18 @@ def run_single_hk_replicate(
 
 
 def build_bootstrap_true_density_grid(config: Dict) -> np.ndarray:
-    """True mixture density on a 2D grid for imshow (same mixture as data generation)."""
+    """True Rosenbrock density on a 2D grid for imshow."""
     n = int(config["grid_size"])
     xs = jnp.linspace(config["grid_min"], config["grid_max"], n)
     ys = jnp.linspace(config["grid_min"], config["grid_max"], n)
     X, Y = jnp.meshgrid(xs, ys)
     grid_points = jnp.stack([X.ravel(), Y.ravel()], axis=1)
-    dens = true_mixture_density(
-        grid_points,
-        config["true_means"],
-        config["true_stds"],
-        config["true_weights"],
+    rosen = RosenbrockDistribution(
+        a=float(config["rosen_a"]),
+        b=float(config["rosen_b"]),
+        sigma=float(config["rosen_sigma"]),
     )
+    dens = rosen.pdf(grid_points)
     return np.asarray(dens.reshape(n, n))
 
 
@@ -391,7 +381,7 @@ def run_study_truncation_vs_continuation(config: Dict, key: jax.Array) -> jax.Ar
             cfg = dict(config)
             cfg["n_data"] = nd
             key, data_key, pp_key = jr.split(key, 3)
-            data, _ = generate_bivariate_data(data_key, cfg)
+            data = generate_rosenbrock_data(data_key, cfg)
             prior_particles = prior.to_particle_measure(pp_key, cfg["n_particles"])
 
             n_steps_trunc = nd
@@ -462,7 +452,7 @@ def run_study_prior_regularization(config: Dict, key: jax.Array) -> jax.Array:
         cfg = dict(config)
         cfg["n_data"] = nd
         key, data_key, pp_key = jr.split(key, 3)
-        data, _ = generate_bivariate_data(data_key, cfg)
+        data = generate_rosenbrock_data(data_key, cfg)
         prior_particles = prior.to_particle_measure(pp_key, cfg["n_particles"])
         n_steps = int(nd)
         print(f"  n_data={nd}, n_steps={n_steps} (continuation disabled)")

@@ -35,19 +35,12 @@ from recursive_mixtures import (
     NewtonFlow,
     HellingerKantorovichFlow,
 )
-from recursive_mixtures.utils import generate_mixture_data, true_mixture_density
-
 from paw_distribution import PawDistribution
 
 
 def setup_config() -> Dict:
     """Shared configuration for the three-flow comparison."""
-    paw = PawDistribution()
-    paw_params = paw.to_dict()
     return {
-        "dumbbell_means": jnp.array(paw_params["means"]),
-        "dumbbell_stds": jnp.array(paw_params["stds"]),
-        "dumbbell_weights": jnp.array(paw_params["weights"]),
         "n_data": 1000,
         "n_particles": 50,
         # Shared step / kernel params
@@ -79,30 +72,20 @@ def setup_config() -> Dict:
 
 
 def generate_data(key: jax.Array, config: Dict) -> jax.Array:
-    """Sample n i.i.d. points from the cat-paw mixture."""
-    samples, _ = generate_mixture_data(
-        key,
-        config["n_data"],
-        config["dumbbell_means"],
-        config["dumbbell_stds"],
-        config["dumbbell_weights"],
-    )
-    return samples
+    """Sample n i.i.d. points from the paw distribution."""
+    paw = PawDistribution()
+    return paw.sample(key, int(config["n_data"]))
 
 
 def build_density_grid(config: Dict) -> np.ndarray:
-    """True paw mixture density on a 2-D grid for plotting."""
+    """True paw density on a 2-D grid for plotting."""
     n = config["grid_size"]
     xs = jnp.linspace(config["grid_min"], config["grid_max"], n)
     ys = jnp.linspace(config["grid_min"], config["grid_max"], n)
     X, Y = jnp.meshgrid(xs, ys)
     grid_points = jnp.stack([X.ravel(), Y.ravel()], axis=1)
-    dens = true_mixture_density(
-        grid_points,
-        config["dumbbell_means"],
-        config["dumbbell_stds"],
-        config["dumbbell_weights"],
-    )
+    paw = PawDistribution()
+    dens = paw.pdf(grid_points)
     return np.asarray(dens.reshape(n, n))
 
 
@@ -247,16 +230,6 @@ def plot_flow_comparison(
             extent=extent,
             aspect="auto",
             cmap="gray_r",
-        )
-        ax.scatter(
-            data_np[:, 0],
-            data_np[:, 1],
-            s=14,
-            c="white",
-            edgecolors="black",
-            linewidths=0.35,
-            alpha=0.75,
-            zorder=2,
         )
         atoms = np.asarray(measure.atoms)
         weights = np.asarray(measure.weights)
