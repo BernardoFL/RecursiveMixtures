@@ -218,9 +218,9 @@ def plot_flow_comparison(
     ]
     data_np = np.asarray(data)
     panels = [
-        ("Newton-Hellinger flow", measure_nh, "darkorange"),
-        ("Newton flow",           measure_newton, "royalblue"),
-        ("HK / WFR flow",         measure_hk, "teal"),
+        ("Newton-FR flow", measure_nh, "darkorange"),
+        ("Newton",           measure_newton, "royalblue"),
+        ("WFR flow",         measure_hk, "teal"),
     ]
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
     for ax, (title, measure, color) in zip(axes, panels):
