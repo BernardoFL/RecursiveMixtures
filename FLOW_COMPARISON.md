@@ -26,13 +26,13 @@ flow family places particles after consuming all n observations.
 
 ## Target and data
 
-- **Truth**: Seven-component 2D Gaussian **cat-paw** mixture from
-  [`paw_distribution.PawDistribution`](paw_distribution.py); parameters stored
-  in config as `dumbbell_means`, `dumbbell_stds`, `dumbbell_weights`.
-- **Data**: `n` i.i.d. draws via `generate_mixture_data`.
+- **Truth**: The 7-component 2D Gaussian **cat-paw** distribution from
+  [`paw_distribution.PawDistribution`](paw_distribution.py) (implemented directly
+  in `flow_comparison.py`).
+- **Data**: `n` i.i.d. draws generated via `PawDistribution().sample(...)`.
 - **Prior**: `PitmanYorProcessPrior(discount=py_discount, strength=py_strength)`
   centered at an isotropic Gaussian `GaussianPrior`.
-- **Plot background**: `true_mixture_density` on the configured grid.
+- **Plot background**: `PawDistribution().pdf(...)` on the configured grid.
 
 ## Flows compared
 
