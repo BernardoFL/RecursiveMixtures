@@ -218,7 +218,7 @@ def plot_paw_hk_panels(
         ax.set_xlim(config["grid_min"], config["grid_max"])
         ax.set_ylim(config["grid_min"], config["grid_max"])
 
-    plt.suptitle("Cat-paw HK: density, data, particles (size ∝ weight)", y=1.02)
+    plt.suptitle("Paw WFR flow: density, data, particles (size ∝ weight)", y=1.02)
     plt.tight_layout()
     plt.savefig(out_path, bbox_inches="tight")
     plt.close(fig)

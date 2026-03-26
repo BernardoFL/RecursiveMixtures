@@ -292,8 +292,8 @@ def plot_truncation_bootstrap_page(
     extent = _extent_from_config(config)
     fig, axes = plt.subplots(1, 2, figsize=(12, 5.5), sharey=True)
     panels = [
-        (hk_trunc, "teal", f"HK: stop after data (n_steps = {n_data})"),
-        (hk_cont, "crimson", f"HK: continuation (n_steps = {n_steps_cont})"),
+        (hk_trunc, "teal", f"WFR flow: stop after data (n_steps = {n_data})"),
+        (hk_cont, "crimson", f"WFR flow: bootstrap continuation (n_steps = {n_steps_cont})"),
     ]
     for ax, (m, color, title) in zip(axes, panels):
         ax.imshow(
@@ -306,7 +306,7 @@ def plot_truncation_bootstrap_page(
         _scatter_particles(ax, config, m, color)
         ax.set_title(title)
     fig.suptitle(
-        f"HK — true density + particles (size ∝ weight), n = {n_data}",
+        f"WFR flow — true density + particles (size ∝ weight), n = {n_data}",
         y=1.02,
     )
     plt.tight_layout()
@@ -333,8 +333,8 @@ def plot_prior_regularization_grid(
         n_steps = int(nd)
         for j, (measure, color, col_label) in enumerate(
             [
-                (hk_on, "teal", "Fisher–Rao prior reg. on"),
-                (hk_off, "royalblue", "Fisher–Rao prior reg. off"),
+                (hk_on, "teal", "Prior on"),
+                (hk_off, "royalblue", "Prior off"),
             ]
         ):
             ax = axes[i, j]
@@ -356,7 +356,7 @@ def plot_prior_regularization_grid(
     axes[-1, 0].set_xlabel("x₁")
     axes[-1, 1].set_xlabel("x₁")
     fig.suptitle(
-        "HK — prior regularization (no continuation): true density + particles "
+        "WFR Flow — Prior Regularization: true density + particles "
         "(size ∝ weight)",
         y=1.01,
     )
