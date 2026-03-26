@@ -12,6 +12,7 @@ from recursive_mixtures.measure import (
     Prior,
     GaussianPrior,
     DirichletProcessPrior,
+    PitmanYorProcessPrior,
     MixturePrior,
 )
 from recursive_mixtures.functionals import Functional, LogLikelihoodFunctional, KLFunctional, MMDFunctional
@@ -37,6 +38,7 @@ __all__ = [
     "Prior",
     "GaussianPrior",
     "DirichletProcessPrior",
+    "PitmanYorProcessPrior",
     "MixturePrior",
     # Functionals
     "Functional",

@@ -239,6 +239,66 @@ class DirichletProcessPrior(Prior):
         return self.base_prior.log_prob(x)
 
 
+class PitmanYorProcessPrior(Prior):
+    """
+    Pitman–Yor process prior PY(d, θ, G0) centered at a base prior G0.
+
+    This generalizes the Dirichlet process (DP) by adding a discount d ∈ [0, 1).
+    When d = 0, PY reduces to DP(θ, G0) (θ is the DP concentration).
+
+    Sampling uses the Chinese restaurant predictive:
+      - with prob (θ + d * k) / (θ + i): draw a new atom from G0
+      - otherwise: choose an existing cluster j with prob (n_j - d) / (θ + i)
+        and copy its atom.
+
+    log_prob proxies to G0 (a PY draw is discrete, not Lebesgue-continuous).
+    """
+
+    def __init__(self, base_prior: Prior, discount: float = 0.0, strength: float = 1.0):
+        d = float(discount)
+        theta = float(strength)
+        if not (0.0 <= d < 1.0):
+            raise ValueError("discount must satisfy 0 <= discount < 1")
+        if theta <= -d:
+            raise ValueError("strength must satisfy strength > -discount")
+        self.base_prior = base_prior
+        self.discount = d
+        self.strength = theta
+
+    def sample(self, key: Array, n: int) -> Array:
+        if n <= 0:
+            raise ValueError("n must be positive")
+
+        atoms: list[Array] = []
+        cluster_counts: list[int] = []
+
+        for i in range(n):
+            key, k_u, k_base, k_choice = jr.split(key, 4)
+            if i == 0:
+                atoms.append(self.base_prior.sample(k_base, 1)[0])
+                cluster_counts.append(1)
+                continue
+
+            k = len(cluster_counts)
+            p_new = (self.strength + self.discount * k) / (self.strength + i)
+
+            if bool(jr.uniform(k_u) < p_new):
+                atoms.append(self.base_prior.sample(k_base, 1)[0])
+                cluster_counts.append(1)
+            else:
+                # Choose a cluster with probability proportional to (n_j - d).
+                weights = jnp.asarray(cluster_counts, dtype=jnp.float64) - self.discount
+                weights = weights / jnp.sum(weights)
+                j = int(jr.choice(k_choice, k, shape=(), p=weights))
+                atoms.append(atoms[j])
+                cluster_counts[j] += 1
+
+        return jnp.stack(atoms, axis=0)
+
+    def log_prob(self, x: Array) -> Array:
+        return self.base_prior.log_prob(x)
+
+
 class MixturePrior(Prior):
     """Mixture of priors  p(x) = Σ_k π_k p_k(x)."""
 

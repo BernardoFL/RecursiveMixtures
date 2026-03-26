@@ -17,7 +17,7 @@ When you change flow logic, defaults, or plotting code, **re-run** the matching 
 
 - **Target**: A fixed **bivariate Gaussian mixture** (three components). True parameters live in `setup_config()` (`true_means`, `true_stds`, `true_weights`).
 - **Observed data**: i.i.d. samples from that mixture of size **`n_data`** (varies per study iteration when using `n_data_list`).
-- **Particle approximation**: **Hellinger–Kantorovich (HK)** flow with a **Dirichlet-process mixing prior** DP(α, G0) on atom locations (G0 = isotropic Gaussian; `dp_concentration` in `setup_config()`) and a **fixed particle count** `n_particles`.
+- **Particle approximation**: **Hellinger–Kantorovich (HK)** flow with a **Pitman–Yor mixing prior** PY(\(d, \theta, G_0\)) on atom locations ( \(G_0\) = isotropic Gaussian; `py_discount`, `py_strength` in `setup_config()`) and a **fixed particle count** `n_particles`.
 - **Bayesian bootstrap (per replicate)**: For each Monte Carlo replicate, Dirichlet-style weights are drawn over data indices; a **bootstrap dataset** `data_boot` of length `n_data` is built by sampling training indices **with replacement** according to those weights. That is independent from **index continuation** (below).
 
 ## Two meanings of “bootstrap”
@@ -106,7 +106,7 @@ python bootstrap_experiment.py --study prior
 | `continuation_factor` / `--continuation-factor` | Continuation length multiplier (A/B only) |
 | `n_bootstrap` | Replicates per cell (default **1**); PDFs show the **first** replicate only |
 | `use_prior_regularization` | Default `True` in config; Study B overrides per arm |
-| `dp_concentration` | DP concentration α for atom prior DP(α, G0) |
+| `py_discount`, `py_strength` | Pitman–Yor parameters \(d\) and \(\theta\) for PY(\(d, \theta, G_0\)) |
 | `prior_flow_weight`, `prior_mc_samples` | Strength and MC draws for HK prior term when enabled |
 | `--full` | Heavier defaults (more data, replicates, Sinkhorn work) |
 | `--study` | `truncation` \| `prior` \| `both` (default `both`) |

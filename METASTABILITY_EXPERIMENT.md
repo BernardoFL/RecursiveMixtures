@@ -10,7 +10,7 @@ After you change the experiment or plotting code, run `python metastability_expe
 
 ## Goal
 
-On **fixed** paw-Gaussian-mixture data of size **n** and **fixed** initial particles (DP prior on atom locations), compare HK behaviour under:
+On **fixed** paw-Gaussian-mixture data of size **n** and **fixed** initial particles (Pitman–Yor prior on atom locations), compare HK behaviour under:
 
 1. **Case (a)** — **n** flow steps, data consumed **in order** (`x_0, \ldots, x_{n-1}`), Fisher–Rao **prior regularization on** (`use_prior_regularization=True`).
 2. **Case (b)** — **n** steps, same ordering, prior regularization **off** (`use_prior_regularization=False`). Atom-level Sinkhorn drift (`use_sinkhorn=True`) is **unchanged**; only the Hellinger prior functional term is disabled.
@@ -26,7 +26,7 @@ Default **k = 1000** (large; reduce with `--k` for testing).
 
 ## Initialization
 
-- `GaussianPrior` + `DirichletProcessPrior` for `prior.sample` (initial atoms).
+- `GaussianPrior` + `PitmanYorProcessPrior` for `prior.sample` (initial atoms).
 - `prior.to_particle_measure` builds `prior_particles` for the HK constructor.
 - **Same** `ParticleMeasure.initialize(initial_atoms)` is passed into all three `flow.run` calls.
 

@@ -25,7 +25,7 @@ from recursive_mixtures import (
     GaussianKernel,
     ParticleMeasure,
     GaussianPrior,
-    DirichletProcessPrior,
+    PitmanYorProcessPrior,
     HellingerKantorovichFlow,
 )
 from recursive_mixtures.utils import generate_mixture_data, true_mixture_density
@@ -54,7 +54,8 @@ def setup_config() -> Dict:
         "hk_use_prior_regularization": True,
         "prior_mean": jnp.array([0.0, 0.0]),
         "prior_std": 5.0,
-        "dp_concentration": 10.0,
+        "py_discount": 0.2,
+        "py_strength": 10.0,
         "grid_min": -2.5,
         "grid_max": 2.5,
         "grid_size": 80,
@@ -254,9 +255,10 @@ def main(n_data: int | None = None, k: int | None = None) -> None:
         std=config["prior_std"],
         dim=2,
     )
-    prior = DirichletProcessPrior(
+    prior = PitmanYorProcessPrior(
         base_prior=base_prior,
-        concentration=config["dp_concentration"],
+        discount=float(config["py_discount"]),
+        strength=float(config["py_strength"]),
     )
     key, init_key, hk_prior_key = jr.split(key, 3)
     initial_atoms = prior.sample(init_key, config["n_particles"])

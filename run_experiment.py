@@ -21,7 +21,7 @@ import numpy as np
 jax.config.update("jax_enable_x64", True)
 
 from recursive_mixtures import (
-    DirichletProcessPrior,
+    PitmanYorProcessPrior,
     GaussianKernel,
     ParticleMeasure,
     GaussianPrior,
@@ -58,7 +58,8 @@ def setup_experiment():
         # Mixing prior: DP(α, G0), G0 = Gaussian on θ
         'prior_mean': 0.0,
         'prior_std': 3.0,
-        'dp_concentration': 10.0,
+        'py_discount': 0.2,
+        'py_strength': 10.0,
         
         # Recording
         'store_every': 10,
@@ -109,12 +110,13 @@ def run_hk_flow(config):
         std=config['prior_std'],
         dim=1,
     )
-    prior = DirichletProcessPrior(
+    prior = PitmanYorProcessPrior(
         base_prior=base_prior,
-        concentration=float(config['dp_concentration']),
+        discount=float(config['py_discount']),
+        strength=float(config['py_strength']),
     )
     print(
-        f"   Prior: DP(α={config['dp_concentration']}, "
+        f"   Prior: PY(d={config['py_discount']}, θ={config['py_strength']}, "
         f"G0=N({config['prior_mean']}, {config['prior_std']}²))"
     )
     
@@ -205,9 +207,10 @@ def run_newton_flow(config):
         std=config['prior_std'],
         dim=1,
     )
-    prior = DirichletProcessPrior(
+    prior = PitmanYorProcessPrior(
         base_prior=base_prior,
-        concentration=float(config['dp_concentration']),
+        discount=float(config['py_discount']),
+        strength=float(config['py_strength']),
     )
 
     # Initial particle measure
