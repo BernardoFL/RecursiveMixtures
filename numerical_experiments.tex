@@ -1,0 +1,185 @@
+% ============================================================
+%  Section: Numerical Experiments
+% ============================================================
+
+\section{Numerical Experiments}
+\label{sec:experiments}
+
+We present three sets of numerical experiments designed to interrogate the behaviour of the
+Hellinger--Kantorovich (HK) gradient flow and the Newton--Hellinger flow developed in the
+preceding sections.
+The first experiment establishes a baseline by comparing both flows on a
+well-separated Gaussian mixture, where the identifiability conditions are comfortably satisfied.
+The second set of experiments examines, on the same family of mixtures, two
+structural choices that arise naturally from the gradient flow formulation: whether the flow
+should be stopped after a single sequential pass over the data or allowed to continue with
+bootstrapped index resampling, and whether the Fisher--Rao prior regularisation term should be
+included in the Hellinger component of the flow.
+The third experiment stresses both flows on a significantly harder target --- a
+seven-component bivariate mixture with the topology of a cat-paw --- and uses it to expose a
+metastability phenomenon that the continuation mechanism is designed to resolve.
+All experiments are implemented in JAX and the code is available at
+\url{https://github.com/BernardoFL/RecursiveMixtures}.
+
+% ------------------------------------------------------------
+\subsection{Experiment 1: Newton--Hellinger versus HK Flow on a
+             Three-Component Gaussian Mixture}
+\label{subsec:exp1}
+
+% Setup
+We begin with the simplest setting in which both algorithms are well-posed.
+The target mixing measure is supported on three atoms located at means
+$\mu_1 = -2.0$, $\mu_2 = 0.0$, $\mu_3 = 2.0 \in \mathbb{R}$, with standard
+deviations $\sigma_1 = \sigma_3 = 0.5$, $\sigma_2 = 0.8$, and weights
+$w_1 = w_3 = 0.3$, $w_2 = 0.4$.
+A dataset of $n = 1{,}000$ i.i.d.\ observations is drawn from the corresponding
+Gaussian mixture.
+Both flows are initialised with $M = 100$ particles drawn from a
+Pitman--Yor process prior $\mathrm{PY}(d, \theta, G_0)$ with discount $d = 0.2$,
+concentration $\theta = 10.0$, and Gaussian base measure $G_0 = \mathcal{N}(0, 9)$.
+The HK flow uses kernel bandwidth $h = 0.8$, step size $\varepsilon = 0.1$,
+and Sinkhorn regularisation $\lambda = 0.05$ with Wasserstein weight $\rho = 0.1$.
+The Newton--Hellinger flow uses the same particle initialisation but updates weights
+only, with atoms held fixed at their initial locations, via the decaying step-size
+schedule $\alpha_n = (n+1)^{-0.6}$.
+
+% Results
+\begin{description}
+  \item[Results.]
+  \textit{[TODO: Describe the four-panel figure output.
+  Panel 1: density evolution over time for each flow.
+  Panel 2: final density estimate vs.\ ground truth for each flow.
+  Panel 3: particle trajectories coloured by final mode assignment.
+  Panel 4: heatmap of weight dynamics across steps.
+  Report qualitative behaviour --- does HK recover atom locations?
+  Does Newton--Hellinger concentrate weight on the correct atoms?
+  Comment on convergence speed and visual alignment with the true density.]}
+\end{description}
+
+% ------------------------------------------------------------
+\subsection{Experiment 2: Bootstrap Studies on the Three-Component Mixture}
+\label{subsec:exp2}
+
+The gradient flow formulation motivates two questions about runtime choices that are not
+addressed by theoretical convergence results alone.
+First, the flow is defined as a continuous-time object driven by a data stream; in finite
+samples it is natural to ask whether stopping after a single sequential pass over the data
+exhausts the useful signal, or whether continuing beyond the data by resampling indices
+provides additional regularisation.
+Second, the Fisher--Rao component of the HK geometry induces a prior regularisation term in
+the Hellinger gradient; its effect on finite-sample behaviour --- whether it accelerates
+convergence or merely adds noise at moderate $n$ --- is not self-evident from the geometry
+alone.
+We address these questions through two structured bootstrap studies, both using the same
+three-component bivariate Gaussian mixture target from Section~\ref{subsec:exp1}, with sample
+sizes $n \in \{50, 100, 200\}$.
+
+Each experiment uses Bayesian bootstrap resampling.
+For each Monte Carlo replicate, Dirichlet-style weights are drawn over data indices and a
+bootstrap dataset of length $n$ is constructed by sampling training indices with replacement
+according to those weights.
+The flow is then run on the resulting resampled stream.
+Both studies use $M = 50$ particles, Sinkhorn iterations set to 25 per optimal transport
+solve, and the same Pitman--Yor prior as Experiment~1.
+
+\subsubsection{Study A: Truncation versus Index Continuation}
+\label{subsubsec:studyA}
+
+In the truncated condition the flow processes indices $0, \ldots, n-1$ sequentially and
+terminates; exactly one epoch over the bootstrap stream.
+In the continuation condition the flow runs for $\lceil c \cdot n \rceil$ steps with
+$c = 2.0$: the first $n$ steps consume the data in order, after which additional steps draw
+indices uniformly with replacement from the same bootstrap dataset (index continuation via
+\texttt{bootstrap\_after\_data=True}).
+For each $n$ in the sample-size grid, both conditions are run on the same bootstrap replicate
+and their final particle configurations are visualised against the true density heatmap.
+Particles are rendered with area proportional to weight; no data scatter is shown so that the
+figures isolate the effect of the flow itself rather than any one realisation of the data.
+
+% Results
+\begin{description}
+  \item[Results.]
+  \textit{[TODO: Describe Figure~\ref{fig:bootstrap_truncation} (the multi-page PDF,
+  one page per $n$, two panels per page: teal = truncated, crimson = continuation).
+  At small $n$ (e.g.\ $n = 50$): does continuation recover structure that truncation misses,
+  or do both collapse to a small region?
+  At larger $n$: does the gap between the two conditions shrink?
+  Is there evidence that continuation over-smooths or introduces spurious modes?
+  Summarise the trend across sample sizes.]}
+\end{description}
+
+\subsubsection{Study B: Fisher--Rao Prior Regularisation}
+\label{subsubsec:studyB}
+
+Study B fixes $n_{\text{steps}} = n$ and $\texttt{bootstrap\_after\_data} = \texttt{False}$
+in both arms, isolating the contribution of the Fisher--Rao prior term.
+In the regularised arm the Sinkhorn prior functional contributes to the Hellinger gradient
+with weight \texttt{prior\_flow\_weight}; in the unregularised arm this term is suppressed
+entirely, even if its weight parameter is positive.
+Crucially, the Sinkhorn drift toward the prior at the atom level (\texttt{use\_sinkhorn}) is
+\emph{not} toggled: only the weight-update prior term is varied.
+Results are displayed as an $N \times 2$ grid (one row per $n$, teal = regularised,
+royalblue = unregularised) using the same visualisation conventions as Study A.
+
+% Results
+\begin{description}
+  \item[Results.]
+  \textit{[TODO: Describe Figure~\ref{fig:bootstrap_prior} (the $N \times 2$ grid PDF).
+  Does prior regularisation visibly pull particles toward the true modes at small $n$?
+  At large $n$, does its effect wash out as expected from a consistent estimator?
+  Are there pathological cases where regularisation hurts --- e.g.\ particles trapped
+  near the prior mean rather than the data-supported modes?
+  Comment on whether the separation between the two arms is monotone in $n$.]}
+\end{description}
+
+% ------------------------------------------------------------
+\subsection{Experiment 3: Metastability on the Cat-Paw Distribution}
+\label{subsec:exp3}
+
+% Setup
+The third experiment is designed to expose a qualitative failure mode of the plain HK flow
+and to demonstrate that index continuation resolves it.
+The target is a seven-component bivariate Gaussian mixture whose components are arranged in
+the topology of a cat paw: four elongated toe pads positioned on a circular arc (radius
+$r = 1.6$, centred at $(0, -0.55)$, spanning $30°$ to $150°$) and three rounder palm
+pads at $(-0.85, -1.45)$, $(0.85, -1.45)$, and $(0.0, -0.55)$.
+The toe components have anisotropic covariance $(\sigma_x, \sigma_y) = (0.18, 0.36)$,
+the side palms are isotropic with $\sigma = 0.38$, and the central palm has $\sigma = 0.55$.
+Mixture weights are approximately $0.11$ per toe and $0.15$ / $0.25$ for the side and
+central palms respectively.
+This target is substantially harder than the three-component mixture: the seven components
+span a compact two-dimensional region, the toe pads are narrow and anisotropic, and
+the layout creates local minima in the energy landscape that can trap particles during
+the sequential data pass.
+
+A dataset of $n = 1{,}000$ observations is drawn from the cat-paw distribution.
+Three variants of the HK flow are initialised with the \emph{same} $M = 50$ particles drawn
+from a Pitman--Yor prior over atom locations, so that differences across variants are
+attributable solely to the algorithmic choices and not to randomness in initialisation.
+The three variants are:
+(a) $n$ flow steps with Fisher--Rao prior regularisation enabled;
+(b) $n$ steps with prior regularisation disabled; and
+(c) $n + k$ steps with prior regularisation enabled, where the first $n$ steps consume the
+data sequentially and the remaining $k = 1{,}000$ steps perform index continuation via
+uniform resampling from the same $n$ observations.
+All variants share step size $\varepsilon = 0.01$, kernel bandwidth $h = 0.4$, and Sinkhorn
+regularisation $\lambda = 0.05$.
+
+Results are presented as a three-panel figure showing the true density heatmap alongside a
+data scatter and, for each variant, the final particle configuration with marker area
+proportional to weight.
+
+% Results
+\begin{description}
+  \item[Results.]
+  \textit{[TODO: Describe Figure~\ref{fig:paw_comparison} (the three-panel PDF:
+  (a) prior on, n steps; (b) prior off, n steps; (c) prior on, n+k steps).
+  For panel (a): do particles recover most of the seven components, or do some
+  get stranded between modes?  Is the central palm over-represented?
+  For panel (b): without prior regularisation, does the flow concentrate faster but
+  miss modes, or does it spread more uniformly?  Is there evidence of mode collapse?
+  For panel (c): does index continuation visibly resolve metastability ---
+  do particles that were stranded in (a) migrate to the correct modes after the
+  continuation phase?  How much weight redistribution is visible?
+  This is the main qualitative claim of the metastability experiment; describe it carefully.]}
+\end{description}
