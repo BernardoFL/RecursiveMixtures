@@ -76,9 +76,12 @@ def setup_config(fast: bool = True) -> Dict:
         "prior_std": 3.0,
         "py_discount": 0.2,
         "py_strength": 10.0,
-        # Density grid
-        "grid_min": -5.0,
-        "grid_max": 5.0,
+        # Density grid / plot bounds
+        # Rosenbrock mass lies near y = x^2, so we need a taller y-range to show it.
+        "grid_x_min": -5.0,
+        "grid_x_max": 5.0,
+        "grid_y_min": -5.0,
+        "grid_y_max": 30.0,
         "grid_size": 35 if fast else 50,
         # Recording
         "store_every": 0,  # only final measures for bootstrap
@@ -224,8 +227,18 @@ def run_single_hk_replicate(
 def build_bootstrap_true_density_grid(config: Dict) -> np.ndarray:
     """True Rosenbrock density on a 2D grid for imshow."""
     n = int(config["grid_size"])
-    xs = jnp.linspace(config["grid_min"], config["grid_max"], n)
-    ys = jnp.linspace(config["grid_min"], config["grid_max"], n)
+    if "grid_x_min" in config:
+        xmin = float(config["grid_x_min"])
+        xmax = float(config["grid_x_max"])
+        ymin = float(config["grid_y_min"])
+        ymax = float(config["grid_y_max"])
+    else:
+        xmin = float(config["grid_min"])
+        xmax = float(config["grid_max"])
+        ymin = float(config["grid_min"])
+        ymax = float(config["grid_max"])
+    xs = jnp.linspace(xmin, xmax, n)
+    ys = jnp.linspace(ymin, ymax, n)
     X, Y = jnp.meshgrid(xs, ys)
     grid_points = jnp.stack([X.ravel(), Y.ravel()], axis=1)
     rosen = RosenbrockDistribution(
@@ -238,6 +251,13 @@ def build_bootstrap_true_density_grid(config: Dict) -> np.ndarray:
 
 
 def _extent_from_config(config: Dict) -> List[float]:
+    if "grid_x_min" in config:
+        return [
+            float(config["grid_x_min"]),
+            float(config["grid_x_max"]),
+            float(config["grid_y_min"]),
+            float(config["grid_y_max"]),
+        ]
     return [
         float(config["grid_min"]),
         float(config["grid_max"]),
@@ -270,8 +290,12 @@ def _scatter_particles(
         linewidths=0.4,
         zorder=3,
     )
-    ax.set_xlim(config["grid_min"], config["grid_max"])
-    ax.set_ylim(config["grid_min"], config["grid_max"])
+    if "grid_x_min" in config:
+        ax.set_xlim(float(config["grid_x_min"]), float(config["grid_x_max"]))
+        ax.set_ylim(float(config["grid_y_min"]), float(config["grid_y_max"]))
+    else:
+        ax.set_xlim(config["grid_min"], config["grid_max"])
+        ax.set_ylim(config["grid_min"], config["grid_max"])
     if with_axis_labels:
         ax.set_xlabel("x₁")
         ax.set_ylabel("x₂")
