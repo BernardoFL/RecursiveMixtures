@@ -1,6 +1,10 @@
 # Bootstrap flow experiments (LLM-oriented reference)
 
-This document describes the structured studies in [`bootstrap_experiment.py`](bootstrap_experiment.py): **A** and **B** use the bivariate Gaussian mixture with HK-only Bayesian-bootstrap replicates.
+This document describes [`bootstrap_experiment.py`](bootstrap_experiment.py) as a
+comparison of two computational choices in HK flow updates:
+
+1. Fisher-Rao prior regularization: **on/off**
+2. Bootstrap continuation after the ordered pass: **on/off**
 
 ## Reference figures in Git
 
@@ -17,83 +21,34 @@ When you change flow logic, defaults, or plotting code, **re-run** the matching 
 
 - **Target**: A fixed **bivariate Gaussian mixture** (three components). True parameters live in `setup_config()` (`true_means`, `true_stds`, `true_weights`).
 - **Observed data**: i.i.d. samples from that mixture of size **`n_data`** (varies per study iteration when using `n_data_list`).
-- **Particle approximation**: **Hellinger–Kantorovich (HK)** flow with a **Pitman–Yor mixing prior** PY(\(d, \theta, G_0\)) on atom locations ( \(G_0\) = isotropic Gaussian; `py_discount`, `py_strength` in `setup_config()`) and a **fixed particle count** `n_particles`.
+- **Particle approximation**: **Hellinger–Kantorovich (HK)** flow with a **Pitman–Yor mixing prior** PY(\(d, \theta, G_0\)) on atom locations (\(G_0\) = isotropic Gaussian; `py_discount`, `py_strength` in `setup_config()`) and a fixed `n_particles`.
 - **Bayesian bootstrap (per replicate)**: For each Monte Carlo replicate, Dirichlet-style weights are drawn over data indices; a **bootstrap dataset** `data_boot` of length `n_data` is built by sampling training indices **with replacement** according to those weights. That is independent from **index continuation** (below).
 
-## Two meanings of “bootstrap”
+## Compared computational choices
 
-1. **Bayesian bootstrap (resampling)** — Happens **inside each replicate**: reweights and resamples the empirical measure to form `data_boot`. Used in all studies.
-2. **Index continuation (flow runtime)** — After the first pass over `data_boot`, the flow can either **stop** or **draw more steps** by appending random indices into `data_boot` (uniformly). This is controlled by `n_steps` and `bootstrap_after_data` in `flow.run` / `_prepare_run` in [`recursive_mixtures/flows.py`](recursive_mixtures/flows.py).
+The script studies a 2x2 factorial design:
 
-Study **A** compares (1) one epoch through `data_boot` vs (2) extra steps with index continuation.  
-Study **B** fixes continuation and toggles **Fisher–Rao prior regularization** on vs off (HK only).
+| Choice | Option 1 | Option 2 |
+|--------|----------|----------|
+| Fisher-Rao prior regularization | `use_prior_regularization=True` | `use_prior_regularization=False` |
+| Continuation after ordered pass | `bootstrap_after_data=True` with extra steps | `bootstrap_after_data=False` (stop at `n_data`) |
 
----
+This isolates algorithmic/computational effects while keeping the model and
+data source fixed.
 
-## Study A: Truncation vs index continuation
+## Output interpretation
 
-**Goal:** For several sample sizes `n ∈ n_data_list`, visualize how **stopping after one pass** over the bootstrap stream compares to **running longer** with **index continuation** (final particle locations on the true density).
+- `bootstrap_truncation_vs_continuation.pdf`: slices emphasizing continuation on/off.
+- `bootstrap_prior_regularization.pdf`: slices emphasizing prior regularization on/off.
+- All panels show true-density heatmaps plus final HK particles (size ∝ weight),
+  with no training-data scatter.
 
-### Conditions
-
-| Condition | `n_steps` | `bootstrap_after_data` | Interpretation |
-|-----------|-----------|------------------------|----------------|
-| **Truncated** | `n_steps = n_data` | `False` | Exactly one pass over indices `0 … n_data-1` of `data_boot`. |
-| **Continuation** | `n_steps = ceil(continuation_factor × n_data)` | `True` | First epoch is sequential; remaining steps reuse random indices into `data_boot`. |
-
-Default `continuation_factor` is **2.0** (configurable).
-
-### Flow compared
-
-Study A uses **HK only**. For **each** `n`, it runs **`n_bootstrap`** truncated HK flows and **`n_bootstrap`** continuation HK flows (independent bootstrap resamples per call); the PDF shows the **first** replicate of each arm (**teal** = stop after data, **crimson** = continuation).
-
-### Data generation note
-
-For each `n`, a **new full dataset** of size `n` is simulated from the same true mixture (independent draws per `n`; not a nested subsample from one super-population).
-
-### Output
-
-- **Plot**: `bootstrap_truncation_vs_continuation.pdf` — **multi-page PDF** (one page per `n`). Each page is **1×2**: HK **truncated** vs HK **continuation** — true density heatmap + final **HK** particles only (size ∝ weight; no data scatter); **teal** / **crimson**.
-- **Console**: progress only (sample sizes and step counts).
-
-### CLI
+## CLI
 
 ```bash
 python bootstrap_experiment.py --study truncation
-python bootstrap_experiment.py --study both   # runs A then B
-```
-
-Optional: `--n-data-list 50,100,200`, `--continuation-factor 2.0`, `--full` (changes default list from `[50,100,200]` to `[200,500,1000]`, raises `grid_size`, `prior_mc_samples`, and `sinkhorn_num_iters`).
-
----
-
-## Study B: HK Fisher–Rao prior regularization ON vs OFF
-
-**Goal:** For each `n ∈ n_data_list`, visualize **HK only** with Fisher–Rao prior regularization **on** vs **off** with continuation explicitly disabled in both arms.
-
-### Schedule (both arms)
-
-- `n_steps = n_data`
-- `bootstrap_after_data = False`
-
-### What is toggled
-
-In [`HellingerKantorovichFlow`](recursive_mixtures/flows.py), `use_prior_regularization` gates whether the **Sinkhorn prior functional** contributes to the **Hellinger gradient** (`prior_flow_weight × h`).  
-
-- **`True`**: Fisher–Rao update uses likelihood gradient **plus** weighted prior term (if `prior_flow_weight > 0` and `prior_mc_samples > 0`).
-- **`False`**: That **weight-update** prior term is **skipped**, **even if** `prior_flow_weight` is positive.
-
-**Not toggled:** Atom updates can still use **Sinkhorn drift toward the prior** when `use_sinkhorn=True` (separate from the Fisher–Rao prior regularization switch).
-
-### Output
-
-- **Plot**: `bootstrap_prior_regularization.pdf` — **single-page PDF** with an **N×2** grid (N = `len(n_data_list)`): **each row** is one sample size `n`; **left column** = Fisher–Rao prior **on** (**teal**), **right column** = **off** (**royalblue**). Same panel style as Study A: true-density heatmap + **HK** particles only (size ∝ weight; no data scatter). Both arms use `n_steps = n_data` and `bootstrap_after_data = False`. **First** bootstrap replicate per cell.
-- **Console**: progress only.
-
-### CLI
-
-```bash
 python bootstrap_experiment.py --study prior
+python bootstrap_experiment.py --study both
 ```
 
 ---
@@ -102,10 +57,10 @@ python bootstrap_experiment.py --study prior
 
 | Key / flag | Role |
 |------------|------|
-| `n_data_list` / `--n-data-list` | Sample sizes for Studies A and B |
+| `n_data_list` / `--n-data-list` | Sample sizes used in the comparison |
 | `continuation_factor` / `--continuation-factor` | Continuation length multiplier (A/B only) |
 | `n_bootstrap` | Replicates per cell (default **1**); PDFs show the **first** replicate only |
-| `use_prior_regularization` | Default `True` in config; Study B overrides per arm |
+| `use_prior_regularization` | Prior regularization switch (on/off arms) |
 | `py_discount`, `py_strength` | Pitman–Yor parameters \(d\) and \(\theta\) for PY(\(d, \theta, G_0\)) |
 | `prior_flow_weight`, `prior_mc_samples` | Strength and MC draws for HK prior term when enabled |
 | `--full` | Heavier defaults (more data, replicates, Sinkhorn work) |
@@ -117,14 +72,14 @@ python bootstrap_experiment.py --study prior
 
 | File | Content |
 |------|---------|
-| `bootstrap_truncation_vs_continuation.pdf` | Study A — multi-page HK truncated vs continuation (1×2 per page) |
-| `bootstrap_prior_regularization.pdf` | Study B — single page, **N×2** grid: one row per `n`, prior on (left) / off (right) |
+| `bootstrap_truncation_vs_continuation.pdf` | HK comparison focused on continuation on/off |
+| `bootstrap_prior_regularization.pdf` | HK comparison focused on prior regularization on/off |
 
 ---
 
 ## Implementation pointers
 
-- Studies: `run_study_truncation_vs_continuation`, `run_study_prior_regularization` in [`bootstrap_experiment.py`](bootstrap_experiment.py).
+- Study runners: `run_study_truncation_vs_continuation`, `run_study_prior_regularization` in [`bootstrap_experiment.py`](bootstrap_experiment.py).
 - Per-replicate overrides: `n_steps_override`, `bootstrap_after_data_override`, `use_prior_regularization` on `run_single_hk_replicate`.
 - Index continuation logic: `_prepare_run` in [`recursive_mixtures/flows.py`](recursive_mixtures/flows.py).
 - Prior term gate: `HellingerKantorovichFlow.use_prior_regularization` and `need_mc` in `step`.
