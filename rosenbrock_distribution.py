@@ -5,12 +5,13 @@ Rosenbrock-shaped probability distribution in 2D.
 We use the standard Rosenbrock "valley" energy:
     f(x, y) = (a - x)^2 + b (y - x^2)^2
 
-Define a *normalized* probability density:
-    p(x, y) ∝ exp( - f(x, y) / (2 * sigma^2) ).
+Define an (unnormalized) density:
+    p(x, y) ∝ exp( - f(x, y) / 20 ).
 
-This factorizes into an exact conditional Gaussian model:
-    x ~ Normal(a, sigma^2)
-    y | x ~ Normal(x^2, sigma^2 / b)
+This corresponds to the normalized model with σ² = 10 in the form
+exp(-f/(2σ²)), so we can sample exactly via:
+    x ~ Normal(a, 10)
+    y | x ~ Normal(x^2, 10 / b)
 """
 
 from __future__ import annotations
@@ -24,29 +25,27 @@ from jax import Array
 
 
 class RosenbrockDistribution:
-    """A normalized 2D distribution concentrated near y = x^2."""
+    """A 2D distribution concentrated near y = x^2 with density exp(-f/20)."""
 
     def __init__(
         self,
         a: float = 1.0,
         b: float = 5.0,
-        sigma: float = 1.0,
     ):
         if b <= 0:
             raise ValueError("b must be positive")
-        if sigma <= 0:
-            raise ValueError("sigma must be positive")
         self.a = float(a)
         self.b = float(b)
-        self.sigma = float(sigma)
+        self._sigma2 = 10.0
 
     def sample(self, key: Array, n: int) -> Array:
         """Sample n points; returns shape (n, 2)."""
         if n <= 0:
             raise ValueError("n must be positive")
         kx, ky = jr.split(key, 2)
-        x = self.a + self.sigma * jr.normal(kx, shape=(n,))
-        y_std = self.sigma / jnp.sqrt(self.b)
+        sigma = jnp.sqrt(self._sigma2)
+        x = self.a + sigma * jr.normal(kx, shape=(n,))
+        y_std = sigma / jnp.sqrt(self.b)
         y = x**2 + y_std * jr.normal(ky, shape=(n,))
         return jnp.stack([x, y], axis=1)
 
@@ -68,13 +67,8 @@ class RosenbrockDistribution:
         x1 = x[:, 0]
         x2 = x[:, 1]
 
-        sigma2 = self.sigma**2
-        # Joint density from factorization:
-        # p(x) = N(a, sigma^2)
-        # p(y|x) = N(x^2, sigma^2/b)
-        coeff = jnp.sqrt(self.b) / (2.0 * jnp.pi * sigma2)
         exponent = -(
             (self.a - x1) ** 2 + self.b * (x2 - x1**2) ** 2
-        ) / (2.0 * sigma2)
-        return coeff * jnp.exp(exponent)
+        ) / 20.0
+        return jnp.exp(exponent)
 

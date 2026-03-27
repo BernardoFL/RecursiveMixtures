@@ -42,17 +42,18 @@ from recursive_mixtures.utils import bayesian_bootstrap
 from rosenbrock_distribution import RosenbrockDistribution
 
 
-def _rosen_plot_bounds(a: float, b: float, sigma: float, *, nsig: float = 4.0) -> dict:
+def _rosen_plot_bounds(a: float, b: float, *, nsig: float = 4.0) -> dict:
     """
     Heuristic plot bounds that capture essentially all Rosenbrock mass.
 
-    For RosenbrockDistribution:
-      x ~ N(a, sigma^2)
-      y | x ~ N(x^2, sigma^2 / b)
+    For RosenbrockDistribution with density exp(-f/20), we have σ² = 10 in the
+    equivalent exp(-f/(2σ²)) form:
+      x ~ N(a, 10)
+      y | x ~ N(x^2, 10 / b)
     """
     a = float(a)
     b = float(b)
-    sigma = float(sigma)
+    sigma = float(np.sqrt(10.0))
     x_min = a - nsig * sigma
     x_max = a + nsig * sigma
     y_std = sigma / np.sqrt(b)
@@ -79,7 +80,6 @@ def setup_config(fast: bool = True) -> Dict:
         # Samples concentrate near the valley y = x^2.
         "rosen_a": 1.0,
         "rosen_b": 100.0,
-        "rosen_sigma": 1.0,
         # Data
         "n_data": 200 if fast else 1000,
         # Flow parameters
@@ -117,7 +117,6 @@ def setup_config(fast: bool = True) -> Dict:
         _rosen_plot_bounds(
             a=config["rosen_a"],
             b=config["rosen_b"],
-            sigma=config["rosen_sigma"],
             nsig=4.0,
         )
     )
@@ -132,7 +131,6 @@ def generate_rosenbrock_data(
     rosen = RosenbrockDistribution(
         a=float(config["rosen_a"]),
         b=float(config["rosen_b"]),
-        sigma=float(config["rosen_sigma"]),
     )
     return rosen.sample(key, int(config["n_data"]))
 
@@ -270,7 +268,6 @@ def build_bootstrap_true_density_grid(config: Dict) -> np.ndarray:
     rosen = RosenbrockDistribution(
         a=float(config["rosen_a"]),
         b=float(config["rosen_b"]),
-        sigma=float(config["rosen_sigma"]),
     )
     dens = rosen.pdf(grid_points)
     return np.asarray(dens.reshape(n, n))
