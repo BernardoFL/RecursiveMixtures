@@ -94,7 +94,7 @@ Thumbs.db
 # Committed experiment/reference figures (override *.pdf above)
 !bootstrap_truncation_vs_continuation.pdf
 !bootstrap_prior_regularization.pdf
-!paw_hk_comparison.pdf
+!flow_comparison.pdf
 !paw_hk_overlay_*.pdf
 *.jpg
 *.jpeg
