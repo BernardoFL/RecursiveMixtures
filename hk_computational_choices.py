@@ -79,7 +79,7 @@ def setup_config(fast: bool = True) -> Dict:
         # Rosenbrock distribution parameters
         # Samples concentrate near the valley y = x^2.
         "rosen_a": 1.0,
-        "rosen_b": 100.0,
+        "rosen_b": 10.0,
         # Data
         "n_data": 200 if fast else 1000,
         # Flow parameters
@@ -101,7 +101,7 @@ def setup_config(fast: bool = True) -> Dict:
         "py_discount": 0.2,
         "py_strength": 10.0,
         # Density grid / plot bounds (tight bounds computed from a,b,sigma)
-        "grid_size": 35 if fast else 50,
+        "grid_size": 200,
         # Recording
         "store_every": 0,  # only final measures for bootstrap
         # Random seeds
