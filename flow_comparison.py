@@ -249,12 +249,8 @@ def plot_flow_comparison(
         ax.set_xlabel("x₁")
         ax.set_ylabel("x₂")
         ax.set_xlim(config["grid_min"], config["grid_max"])
-        ax.set_ylim(config["grid_min"], 20.0)
+        ax.set_ylim(config["grid_min"], config["grid_max"])
 
-    plt.suptitle(
-        "Flow comparison on cat-paw mixture: density, data, particles (size ∝ weight)",
-        y=1.02,
-    )
     plt.tight_layout()
     plt.savefig(out_path, bbox_inches="tight")
     plt.close(fig)
