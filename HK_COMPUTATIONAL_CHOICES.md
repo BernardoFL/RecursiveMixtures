@@ -61,6 +61,12 @@ python hk_computational_choices.py --study prior
 python hk_computational_choices.py --study both
 ```
 
+To restrict the y-axis, use:
+
+```bash
+python hk_computational_choices.py --study both --y-min 0 --y-max 10
+```
+
 Optional: `--n-data-list 100,1000`, `--full`.
 Default sample sizes are `n=100,1000`.
 
@@ -71,6 +77,7 @@ Default sample sizes are `n=100,1000`.
 | Key / flag | Role |
 |------------|------|
 | `n_data_list` / `--n-data-list` | Sample sizes used in the comparison |
+| `--y-min`, `--y-max` | Optional y-axis bounds override for all panels |
 | Continuation schedule | Fixed `n_steps_on = ceil(1.5 * n_data)` |
 | `n_bootstrap` | Replicates per cell (default **1**); PDFs show the first only |
 | `use_prior_regularization` | Prior regularization switch (on/off arms) |

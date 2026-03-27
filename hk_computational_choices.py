@@ -563,11 +563,19 @@ def main(
     fast: bool = True,
     study: str = "both",
     n_data_list: Optional[List[int]] = None,
+    y_min: Optional[float] = None,
+    y_max: Optional[float] = None,
 ) -> None:
     """Run truncation/prior bootstrap studies (or both)."""
     config = setup_config(fast=fast)
     if n_data_list is not None:
         config["n_data_list"] = n_data_list
+    if y_min is not None:
+        config["grid_y_min"] = float(y_min)
+    if y_max is not None:
+        config["grid_y_max"] = float(y_max)
+    if config["grid_y_min"] >= config["grid_y_max"]:
+        raise ValueError("Require grid_y_min < grid_y_max")
 
     key = jr.PRNGKey(config["seed"])
 
@@ -606,6 +614,18 @@ if __name__ == "__main__":
         default=None,
         help="Comma-separated sample sizes for truncation/prior studies (default: config).",
     )
+    parser.add_argument(
+        "--y-min",
+        type=float,
+        default=None,
+        help="Override y-axis lower bound for all plots (default: auto from Rosenbrock params).",
+    )
+    parser.add_argument(
+        "--y-max",
+        type=float,
+        default=None,
+        help="Override y-axis upper bound for all plots (default: auto from Rosenbrock params).",
+    )
     args = parser.parse_args()
 
     nd_list: Optional[List[int]] = None
@@ -616,5 +636,7 @@ if __name__ == "__main__":
         fast=not args.full,
         study=args.study,
         n_data_list=nd_list,
+        y_min=args.y_min,
+        y_max=args.y_max,
     )
 
