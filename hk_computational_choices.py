@@ -41,6 +41,9 @@ from recursive_mixtures.utils import bayesian_bootstrap
 
 from rosenbrock_distribution import RosenbrockDistribution
 
+# Upper limit of the y-axis on all study panels (matplotlib view).
+PLOT_Y_AXIS_MAX = 20.0
+
 
 def _rosen_plot_bounds(a: float, b: float, *, nsig: float = 4.0) -> dict:
     """
@@ -315,10 +318,10 @@ def _scatter_particles(
     )
     if "grid_x_min" in config:
         ax.set_xlim(float(config["grid_x_min"]), float(config["grid_x_max"]))
-        ax.set_ylim(float(config["grid_y_min"]), float(config["grid_y_max"]))
+        ax.set_ylim(float(config["grid_y_min"]), PLOT_Y_AXIS_MAX)
     else:
         ax.set_xlim(config["grid_min"], config["grid_max"])
-        ax.set_ylim(config["grid_min"], config["grid_max"])
+        ax.set_ylim(config["grid_min"], PLOT_Y_AXIS_MAX)
     if with_axis_labels:
         ax.set_xlabel("x₁")
         ax.set_ylabel("x₂")
