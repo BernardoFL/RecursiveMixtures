@@ -5,6 +5,7 @@ as a comparison of **two computational switches** in the HK (WFR) flow:
 
 1. **Fisher-Rao prior regularization**: `use_prior_regularization` on/off
 2. **Bootstrap continuation** after the ordered data pass: `bootstrap_after_data` on/off
+   with a fixed continuation budget of **+50%** extra steps (`n_steps_on = ceil(1.5 n)`).
 
 ## Reference figures in Git
 
@@ -46,7 +47,7 @@ data source fixed.
 ## Output interpretation
 
 - `bootstrap_truncation_vs_continuation.pdf` — Study A: continuation on vs off
-  across several sample sizes (one 1×2 page per `n`).
+  in a single **N×2** grid (rows = sample sizes `n`, cols = off/on).
 - `bootstrap_prior_regularization.pdf` — Study B: prior regularization on vs
   off (N×2 grid, one row per `n`, no continuation in either arm).
 - All panels: true-density heatmap + final HK particles (size ∝ weight); no
@@ -60,7 +61,8 @@ python hk_computational_choices.py --study prior
 python hk_computational_choices.py --study both
 ```
 
-Optional: `--n-data-list 50,100,200`, `--continuation-factor 2.0`, `--full`.
+Optional: `--n-data-list 100,1000`, `--full`.
+Default sample sizes are `n=100,1000`.
 
 ---
 
@@ -69,7 +71,7 @@ Optional: `--n-data-list 50,100,200`, `--continuation-factor 2.0`, `--full`.
 | Key / flag | Role |
 |------------|------|
 | `n_data_list` / `--n-data-list` | Sample sizes used in the comparison |
-| `continuation_factor` / `--continuation-factor` | Multiplier for continuation arm n_steps |
+| Continuation schedule | Fixed `n_steps_on = ceil(1.5 * n_data)` |
 | `n_bootstrap` | Replicates per cell (default **1**); PDFs show the first only |
 | `use_prior_regularization` | Prior regularization switch (on/off arms) |
 | `py_discount`, `py_strength` | Pitman–Yor parameters d and θ for PY(d, θ, G₀) |

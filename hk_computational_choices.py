@@ -110,9 +110,8 @@ def setup_config(fast: bool = True) -> Dict:
         # bootstrap continuation beyond data length.
         "n_steps": None,
         # Studies (truncation vs continuation; prior on/off): sample sizes and
-        # continuation multiplier n_steps = ceil(continuation_factor * n_data).
-        "n_data_list": [50, 100, 200] if fast else [200, 500, 1000],
-        "continuation_factor": 2.0,
+        # fixed continuation scheme n_steps_on = ceil(1.5 * n_data).
+        "n_data_list": [100, 1000],
     }
     config.update(
         _rosen_plot_bounds(
@@ -328,34 +327,46 @@ def _scatter_particles(
         ax.set_ylabel("x₂")
 
 
-def plot_truncation_bootstrap_page(
+def plot_truncation_bootstrap_grid(
     config: Dict,
     true_grid: np.ndarray,
-    hk_trunc: ParticleMeasure,
-    hk_cont: ParticleMeasure,
-    n_data: int,
-    n_steps_cont: int,
+    row_results: List[Tuple[ParticleMeasure, ParticleMeasure, int, int]],
 ) -> plt.Figure:
-    """HK only: 1×2 panels — truncated vs continuation (density + particles, no data scatter)."""
+    """
+    Study A: N×2 grid — rows are sample sizes, columns are continuation off/on.
+    """
     extent = _extent_from_config(config)
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5.5), sharey=True)
-    panels = [
-        (hk_trunc, "teal", f"WFR flow: stop after data (n_steps = {n_data})"),
-        (hk_cont, "crimson", f"WFR flow: bootstrap continuation (n_steps = {n_steps_cont})"),
-    ]
-    for ax, (m, color, title) in zip(axes, panels):
-        ax.imshow(
-            true_grid,
-            origin="lower",
-            extent=extent,
-            aspect="auto",
-            cmap="gray_r",
-        )
-        _scatter_particles(ax, config, m, color)
-        ax.set_title(title)
+    nrows = len(row_results)
+    fig_h = max(9.0, 3.4 * nrows)
+    fig, axes = plt.subplots(nrows, 2, figsize=(12.0, fig_h), sharex=True, sharey=True)
+    axes = np.asarray(axes)
+    if nrows == 1:
+        axes = axes.reshape(1, 2)
+
+    for i, (hk_off, hk_on, nd, n_steps_on) in enumerate(row_results):
+        for j, (measure, color, label, n_steps_used) in enumerate(
+            [
+                (hk_off, "teal", "Continuation off", int(nd)),
+                (hk_on, "crimson", "Continuation on", int(n_steps_on)),
+            ]
+        ):
+            ax = axes[i, j]
+            ax.imshow(
+                true_grid,
+                origin="lower",
+                extent=extent,
+                aspect="auto",
+                cmap="gray_r",
+            )
+            _scatter_particles(ax, config, measure, color, with_axis_labels=False)
+            ax.set_title(f"n = {nd}, {label}\n(n_steps = {n_steps_used})")
+    for i in range(nrows):
+        axes[i, 0].set_ylabel("x₂")
+    axes[-1, 0].set_xlabel("x₁")
+    axes[-1, 1].set_xlabel("x₁")
     fig.suptitle(
-        f"WFR flow — true density + particles (size ∝ weight), n = {n_data}",
-        y=1.02,
+        "WFR Flow — Continuation off/on: true density + particles (size ∝ weight)",
+        y=1.01,
     )
     plt.tight_layout()
     return fig
@@ -415,73 +426,67 @@ def plot_prior_regularization_grid(
 
 
 def run_study_truncation_vs_continuation(config: Dict, key: jax.Array) -> jax.Array:
-    """Compare stopping after one pass vs extra steps with index continuation."""
+    """Compare continuation off vs on with fixed +50% extra steps."""
     print("=" * 80)
     print("Study A: bootstrap continuation on vs off (per sample size)")
     print("=" * 80)
     n_data_list = list(config["n_data_list"])
-    continuation_factor = float(config["continuation_factor"])
     B = config["n_bootstrap"]
     prior, kernel = make_prior_and_kernel(config)
 
     true_grid = build_bootstrap_true_density_grid(config)
     out_pdf = "bootstrap_truncation_vs_continuation.pdf"
+    row_results: List[Tuple[ParticleMeasure, ParticleMeasure, int, int]] = []
 
+    for nd in n_data_list:
+        cfg = dict(config)
+        cfg["n_data"] = nd
+        key, data_key, pp_key = jr.split(key, 3)
+        data = generate_rosenbrock_data(data_key, cfg)
+        prior_particles = prior.to_particle_measure(pp_key, cfg["n_particles"])
+
+        n_steps_off = int(nd)
+        n_steps_on = int(np.ceil(1.5 * nd))
+        print(
+            f"  n_data={nd}: continuation off n_steps={n_steps_off}, "
+            f"continuation on n_steps={n_steps_on} (+50%)"
+        )
+
+        hk_off, hk_on = [], []
+        for _ in range(B):
+            key, key_off, key_on = jr.split(key, 3)
+            hk_off.append(
+                run_single_hk_replicate(
+                    key_off,
+                    data,
+                    prior,
+                    kernel,
+                    prior_particles,
+                    cfg,
+                    n_steps_override=n_steps_off,
+                    bootstrap_after_data_override=False,
+                )
+            )
+            hk_on.append(
+                run_single_hk_replicate(
+                    key_on,
+                    data,
+                    prior,
+                    kernel,
+                    prior_particles,
+                    cfg,
+                    n_steps_override=n_steps_on,
+                    bootstrap_after_data_override=True,
+                )
+            )
+        row_results.append((hk_off[0], hk_on[0], int(nd), int(n_steps_on)))
+
+    fig = plot_truncation_bootstrap_grid(config, true_grid, row_results)
     with PdfPages(out_pdf) as pdf:
-        for nd in n_data_list:
-            cfg = dict(config)
-            cfg["n_data"] = nd
-            key, data_key, pp_key = jr.split(key, 3)
-            data = generate_rosenbrock_data(data_key, cfg)
-            prior_particles = prior.to_particle_measure(pp_key, cfg["n_particles"])
+        pdf.savefig(fig, bbox_inches="tight")
+    plt.close(fig)
 
-            n_steps_trunc = nd
-            n_steps_cont = int(np.ceil(continuation_factor * nd))
-            print(
-                f"  n_data={nd}: truncated n_steps={n_steps_trunc}, "
-                f"continuation n_steps={n_steps_cont} (factor={continuation_factor})"
-            )
-
-            hk_t, hk_c = [], []
-            for _ in range(B):
-                key, key_trunc, key_cont = jr.split(key, 3)
-                hk_t.append(
-                    run_single_hk_replicate(
-                        key_trunc,
-                        data,
-                        prior,
-                        kernel,
-                        prior_particles,
-                        cfg,
-                        n_steps_override=n_steps_trunc,
-                        bootstrap_after_data_override=False,
-                    )
-                )
-                hk_c.append(
-                    run_single_hk_replicate(
-                        key_cont,
-                        data,
-                        prior,
-                        kernel,
-                        prior_particles,
-                        cfg,
-                        n_steps_override=n_steps_cont,
-                        bootstrap_after_data_override=True,
-                    )
-                )
-
-            fig = plot_truncation_bootstrap_page(
-                cfg,
-                true_grid,
-                hk_t[0],
-                hk_c[0],
-                nd,
-                n_steps_cont,
-            )
-            pdf.savefig(fig, bbox_inches="tight")
-            plt.close(fig)
-
-    print(f"\nSaved multi-page '{out_pdf}' (HK: continuation on vs off, one page per n).")
+    print(f"\nSaved '{out_pdf}' (HK: {len(n_data_list)}×2 grid, rows = n, cols = continuation off|on).")
     return key
 
 
@@ -558,13 +563,11 @@ def main(
     fast: bool = True,
     study: str = "both",
     n_data_list: Optional[List[int]] = None,
-    continuation_factor: float = 2.0,
 ) -> None:
     """Run truncation/prior bootstrap studies (or both)."""
     config = setup_config(fast=fast)
     if n_data_list is not None:
         config["n_data_list"] = n_data_list
-    config["continuation_factor"] = float(continuation_factor)
 
     key = jr.PRNGKey(config["seed"])
 
@@ -603,27 +606,15 @@ if __name__ == "__main__":
         default=None,
         help="Comma-separated sample sizes for truncation/prior studies (default: config).",
     )
-    parser.add_argument(
-        "--continuation-factor",
-        type=float,
-        default=None,
-        help="n_steps = ceil(factor * n_data) for continuation arms (default: config).",
-    )
     args = parser.parse_args()
 
     nd_list: Optional[List[int]] = None
     if args.n_data_list:
         nd_list = [int(x.strip()) for x in args.n_data_list.split(",") if x.strip()]
 
-    cont_factor = args.continuation_factor
-    if cont_factor is None:
-        sc = setup_config(fast=not args.full)
-        cont_factor = float(sc["continuation_factor"])
-
     main(
         fast=not args.full,
         study=args.study,
         n_data_list=nd_list,
-        continuation_factor=cont_factor,
     )
 
