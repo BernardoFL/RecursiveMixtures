@@ -42,6 +42,30 @@ from recursive_mixtures.utils import bayesian_bootstrap
 from rosenbrock_distribution import RosenbrockDistribution
 
 
+def _rosen_plot_bounds(a: float, b: float, sigma: float, *, nsig: float = 4.0) -> dict:
+    """
+    Heuristic plot bounds that capture essentially all Rosenbrock mass.
+
+    For RosenbrockDistribution:
+      x ~ N(a, sigma^2)
+      y | x ~ N(x^2, sigma^2 / b)
+    """
+    a = float(a)
+    b = float(b)
+    sigma = float(sigma)
+    x_min = a - nsig * sigma
+    x_max = a + nsig * sigma
+    y_std = sigma / np.sqrt(b)
+    y_min = min(0.0, x_min**2) - nsig * y_std
+    y_max = x_max**2 + nsig * y_std
+    return {
+        "grid_x_min": float(x_min),
+        "grid_x_max": float(x_max),
+        "grid_y_min": float(y_min),
+        "grid_y_max": float(y_max),
+    }
+
+
 
 def setup_config(fast: bool = True) -> Dict:
     """Configuration dictionary for the bootstrap HK experiment.
@@ -54,7 +78,7 @@ def setup_config(fast: bool = True) -> Dict:
         # Rosenbrock distribution parameters
         # Samples concentrate near the valley y = x^2.
         "rosen_a": 1.0,
-        "rosen_b": 5.0,
+        "rosen_b": 100.0,
         "rosen_sigma": 1.0,
         # Data
         "n_data": 200 if fast else 1000,
@@ -76,12 +100,7 @@ def setup_config(fast: bool = True) -> Dict:
         "prior_std": 3.0,
         "py_discount": 0.2,
         "py_strength": 10.0,
-        # Density grid / plot bounds
-        # Rosenbrock mass lies near y = x^2, so we need a taller y-range to show it.
-        "grid_x_min": -5.0,
-        "grid_x_max": 5.0,
-        "grid_y_min": -5.0,
-        "grid_y_max": 30.0,
+        # Density grid / plot bounds (tight bounds computed from a,b,sigma)
         "grid_size": 35 if fast else 50,
         # Recording
         "store_every": 0,  # only final measures for bootstrap
@@ -95,6 +114,14 @@ def setup_config(fast: bool = True) -> Dict:
         "n_data_list": [50, 100, 200] if fast else [200, 500, 1000],
         "continuation_factor": 2.0,
     }
+    config.update(
+        _rosen_plot_bounds(
+            a=config["rosen_a"],
+            b=config["rosen_b"],
+            sigma=config["rosen_sigma"],
+            nsig=4.0,
+        )
+    )
     return config
 
 

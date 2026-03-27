@@ -23,8 +23,8 @@ command below and **commit the refreshed PDFs**.
 
 ## Problem setup
 
-- **Target**: The **Rosenbrock distribution**. Parameters live in
-  `setup_config()` (`rosen_a`, `rosen_b`, `rosen_sigma`).
+- **Target**: The **Rosenbrock distribution** with parameters
+  `rosen_a = 1`, `rosen_b = 100` (and `rosen_sigma` in `setup_config()`).
 - **Observed data**: i.i.d. samples of size `n_data` (varies per study when
   using `n_data_list`).
 - **Flow**: `HellingerKantorovichFlow` with a Pitman–Yor mixing prior
