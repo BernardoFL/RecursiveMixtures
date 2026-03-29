@@ -24,8 +24,9 @@ command below and **commit the refreshed PDFs**.
 
 ## Problem setup
 
-- **Target**: The **Rosenbrock distribution** with parameters
-  `rosen_a = 1.0`, `rosen_b = 10.0`, using density `exp(-f/20)` (no σ parameter).
+- **Target**: A **four-petal clover** distribution: an equal-weight mixture of
+  four anisotropic 2D Gaussians centered on the cardinal directions, with the
+  long axis aligned radially. Implemented as [`CloverDistribution`](clover_distribution.py).
 - **Observed data**: i.i.d. samples of size `n_data` (varies per study when
   using `n_data_list`).
 - **Flow**: `HellingerKantorovichFlow` with a Pitman–Yor mixing prior
@@ -61,13 +62,11 @@ python hk_computational_choices.py --study prior
 python hk_computational_choices.py --study both
 ```
 
-To adjust the **heatmap / density grid** y-range (e.g. tighter vertical sampling), use:
+To override the automatic y-bounds (heatmap extent and panel y-axis match), use:
 
 ```bash
 python hk_computational_choices.py --study both --y-min 0 --y-max 10
 ```
-
-The **drawn** y-axis on every panel uses a fixed upper limit of **20.0**; `--y-max` does not change that upper tick limit (it still updates `grid_y_max` used for the density grid and `imshow` extent).
 
 Optional: `--n-data-list 100,1000`, `--full`.
 Default sample sizes are `n=100,1000`.
@@ -80,7 +79,7 @@ Default sample sizes are `n=100,1000`.
 |------------|------|
 | `n_data_list` / `--n-data-list` | Sample sizes used in the comparison |
 | `grid_size` | Heatmap resolution (default: **200**) |
-| `--y-min`, `--y-max` | Optional `grid_y_min` / `grid_y_max` for heatmap extent; panel y-axis upper limit is fixed at **20.0** |
+| `--y-min`, `--y-max` | Optional `grid_y_min` / `grid_y_max` (heatmap extent and y-axis limits; default: auto from target) |
 | Continuation schedule | Fixed `n_steps_on = ceil(1.5 * n_data)` |
 | `n_bootstrap` | Replicates per cell (default **1**); PDFs show the first only |
 | `use_prior_regularization` | Prior regularization switch (on/off arms) |

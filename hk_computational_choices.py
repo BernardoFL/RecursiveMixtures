@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Computational choices experiment for the HK (WFR) flow on the Rosenbrock
-distribution.
+Computational choices experiment for the HK (WFR) flow on a four-petal clover
+Gaussian mixture.
 
 Isolates the effect of two algorithmic switches:
 
@@ -39,29 +39,19 @@ from recursive_mixtures import (
 )
 from recursive_mixtures.utils import bayesian_bootstrap
 
-from rosenbrock_distribution import RosenbrockDistribution
-
-# Upper limit of the y-axis on all study panels (matplotlib view).
-PLOT_Y_AXIS_MAX = 20.0
+from clover_distribution import CloverDistribution
 
 
-def _rosen_plot_bounds(a: float, b: float, *, nsig: float = 4.0) -> dict:
-    """
-    Heuristic plot bounds that capture essentially all Rosenbrock mass.
-
-    For RosenbrockDistribution with density exp(-f/20), we have σ² = 10 in the
-    equivalent exp(-f/(2σ²)) form:
-      x ~ N(a, 10)
-      y | x ~ N(x^2, 10 / b)
-    """
-    a = float(a)
-    b = float(b)
-    sigma = float(np.sqrt(10.0))
-    x_min = a - nsig * sigma
-    x_max = a + nsig * sigma
-    y_std = sigma / np.sqrt(b)
-    y_min = min(0.0, x_min**2) - nsig * y_std
-    y_max = x_max**2 + nsig * y_std
+def _clover_plot_bounds(radius: float, radial_std: float, tangential_std: float, *, nsig: float = 4.0) -> dict:
+    """Heuristic plot bounds that capture essentially all clover mass."""
+    r = float(radius)
+    rs = float(radial_std)
+    ts = float(tangential_std)
+    pad = nsig * max(rs, ts)
+    x_min = -(r + pad)
+    x_max = (r + pad)
+    y_min = -(r + pad)
+    y_max = (r + pad)
     return {
         "grid_x_min": float(x_min),
         "grid_x_max": float(x_max),
@@ -79,10 +69,10 @@ def setup_config(fast: bool = True) -> Dict:
     """
     # Fast defaults: fewer steps and Sinkhorn work so runs complete in minutes
     config = {
-        # Rosenbrock distribution parameters
-        # Samples concentrate near the valley y = x^2.
-        "rosen_a": 1.0,
-        "rosen_b": 10.0,
+        # Target distribution: four-petal clover Gaussian mixture parameters
+        "clover_radius": 1.5,
+        "clover_radial_std": 0.45,
+        "clover_tangential_std": 0.18,
         # Data
         "n_data": 200 if fast else 1000,
         # Flow parameters
@@ -103,7 +93,7 @@ def setup_config(fast: bool = True) -> Dict:
         "prior_std": 3.0,
         "py_discount": 0.2,
         "py_strength": 10.0,
-        # Density grid / plot bounds (tight bounds computed from a,b,sigma)
+        # Density grid / plot bounds
         "grid_size": 200,
         # Recording
         "store_every": 0,  # only final measures for bootstrap
@@ -117,25 +107,27 @@ def setup_config(fast: bool = True) -> Dict:
         "n_data_list": [100, 1000],
     }
     config.update(
-        _rosen_plot_bounds(
-            a=config["rosen_a"],
-            b=config["rosen_b"],
+        _clover_plot_bounds(
+            radius=config["clover_radius"],
+            radial_std=config["clover_radial_std"],
+            tangential_std=config["clover_tangential_std"],
             nsig=4.0,
         )
     )
     return config
 
 
-def generate_rosenbrock_data(
+def generate_clover_data(
     key: jax.Array,
     config: Dict,
 ) -> jax.Array:
-    """Sample n i.i.d. points from the Rosenbrock distribution."""
-    rosen = RosenbrockDistribution(
-        a=float(config["rosen_a"]),
-        b=float(config["rosen_b"]),
+    """Sample n i.i.d. points from the clover Gaussian mixture."""
+    clover = CloverDistribution(
+        radius=float(config["clover_radius"]),
+        radial_std=float(config["clover_radial_std"]),
+        tangential_std=float(config["clover_tangential_std"]),
     )
-    return rosen.sample(key, int(config["n_data"]))
+    return clover.sample(key, int(config["n_data"]))
 
 
 def make_prior_and_kernel(config: Dict):
@@ -252,7 +244,7 @@ def run_single_hk_replicate(
 
 
 def build_bootstrap_true_density_grid(config: Dict) -> np.ndarray:
-    """True Rosenbrock density on a 2D grid for imshow."""
+    """True clover density on a 2D grid for imshow."""
     n = int(config["grid_size"])
     if "grid_x_min" in config:
         xmin = float(config["grid_x_min"])
@@ -268,11 +260,12 @@ def build_bootstrap_true_density_grid(config: Dict) -> np.ndarray:
     ys = jnp.linspace(ymin, ymax, n)
     X, Y = jnp.meshgrid(xs, ys)
     grid_points = jnp.stack([X.ravel(), Y.ravel()], axis=1)
-    rosen = RosenbrockDistribution(
-        a=float(config["rosen_a"]),
-        b=float(config["rosen_b"]),
+    clover = CloverDistribution(
+        radius=float(config["clover_radius"]),
+        radial_std=float(config["clover_radial_std"]),
+        tangential_std=float(config["clover_tangential_std"]),
     )
-    dens = rosen.pdf(grid_points)
+    dens = clover.pdf(grid_points)
     return np.asarray(dens.reshape(n, n))
 
 
@@ -318,10 +311,10 @@ def _scatter_particles(
     )
     if "grid_x_min" in config:
         ax.set_xlim(float(config["grid_x_min"]), float(config["grid_x_max"]))
-        ax.set_ylim(float(config["grid_y_min"]), PLOT_Y_AXIS_MAX)
+        ax.set_ylim(float(config["grid_y_min"]), float(config["grid_y_max"]))
     else:
         ax.set_xlim(config["grid_min"], config["grid_max"])
-        ax.set_ylim(config["grid_min"], PLOT_Y_AXIS_MAX)
+        ax.set_ylim(config["grid_min"], config["grid_max"])
     if with_axis_labels:
         ax.set_xlabel("x₁")
         ax.set_ylabel("x₂")
@@ -442,7 +435,7 @@ def run_study_truncation_vs_continuation(config: Dict, key: jax.Array) -> jax.Ar
         cfg = dict(config)
         cfg["n_data"] = nd
         key, data_key, pp_key = jr.split(key, 3)
-        data = generate_rosenbrock_data(data_key, cfg)
+        data = generate_clover_data(data_key, cfg)
         prior_particles = prior.to_particle_measure(pp_key, cfg["n_particles"])
 
         n_steps_off = int(nd)
@@ -508,7 +501,7 @@ def run_study_prior_regularization(config: Dict, key: jax.Array) -> jax.Array:
         cfg = dict(config)
         cfg["n_data"] = nd
         key, data_key, pp_key = jr.split(key, 3)
-        data = generate_rosenbrock_data(data_key, cfg)
+        data = generate_clover_data(data_key, cfg)
         prior_particles = prior.to_particle_measure(pp_key, cfg["n_particles"])
         n_steps = int(nd)
         print(f"  n_data={nd}, n_steps={n_steps} (continuation disabled)")
@@ -618,13 +611,13 @@ if __name__ == "__main__":
         "--y-min",
         type=float,
         default=None,
-        help="Override y-axis lower bound for all plots (default: auto from Rosenbrock params).",
+        help="Override y-axis lower bound for the density grid / extent (default: auto from target params).",
     )
     parser.add_argument(
         "--y-max",
         type=float,
         default=None,
-        help="Override y-axis upper bound for all plots (default: auto from Rosenbrock params).",
+        help="Override y-axis upper bound for the density grid / extent (default: auto from target params).",
     )
     args = parser.parse_args()
 
