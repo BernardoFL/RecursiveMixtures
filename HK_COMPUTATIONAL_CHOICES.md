@@ -69,6 +69,8 @@ Requires the **POT** package (`pip install POT`).
   in a single **N×2** grid (rows = sample sizes `n`, cols = off/on).
 - `bootstrap_prior_regularization.pdf` — Study B: prior regularization on vs
   off (N×2 grid, one row per `n`, no continuation in either arm).
+- For HPC trajectory uncertainty quantification for Study B, use
+  [`hk_prior_regularization_uq.py`](hk_prior_regularization_uq.py).
 - `hk_wasserstein_vs_n.pdf` — Study C: \(W_2\) vs `n` for the four factorial arms.
 - All panels: true-density heatmap + final HK particles (size ∝ weight); no
   training-data scatter.
@@ -80,6 +82,7 @@ python hk_computational_choices.py --study truncation
 python hk_computational_choices.py --study prior
 python hk_computational_choices.py --study both
 python hk_computational_choices.py --study wasserstein
+python hk_prior_regularization_uq.py --niter 100 --n-data 1000 --store-every 10 --out-dir results/
 ```
 
 To override the automatic y-bounds (heatmap extent and panel y-axis match), use:

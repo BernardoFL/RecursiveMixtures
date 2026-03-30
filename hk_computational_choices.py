@@ -375,50 +375,16 @@ def plot_prior_regularization_grid(
     true_grid: np.ndarray,
     row_results: List[Tuple[ParticleMeasure, ParticleMeasure, int]],
 ) -> plt.Figure:
-    """
-    HK Study B: N×2 grid — one row per sample size; columns = prior on | prior off.
-    Same panel style as Study A (true-density heatmap + HK particles only).
-    """
-    nrows = len(row_results)
-    extent = _extent_from_config(config)
-    fig_h = max(9.0, 3.4 * nrows)
-    fig, axes = plt.subplots(nrows, 2, figsize=(12.0, fig_h), sharex=True, sharey=True)
-    axes = np.asarray(axes)
-    if nrows == 1:
-        axes = axes.reshape(1, 2)
-    for i, (hk_on, hk_off, nd) in enumerate(row_results):
-        n_steps = int(nd)
-        for j, (measure, color, col_label) in enumerate(
-            [
-                (hk_on, "teal", "Prior on"),
-                (hk_off, "royalblue", "Prior off"),
-            ]
-        ):
-            ax = axes[i, j]
-            ax.imshow(
-                true_grid,
-                origin="lower",
-                extent=extent,
-                aspect="auto",
-                cmap="gray_r",
-            )
-            _scatter_particles(
-                ax, config, measure, color, with_axis_labels=False
-            )
-            ax.set_title(
-                f"n = {nd}, {col_label}\n(n_steps = {n_steps})"
-            )
-    for i in range(nrows):
-        axes[i, 0].set_ylabel("x₂")
-    axes[-1, 0].set_xlabel("x₁")
-    axes[-1, 1].set_xlabel("x₁")
-    fig.suptitle(
-        "WFR Flow — Prior Regularization: true density + particles "
-        "(size ∝ weight)",
-        y=1.01,
+    # Study B plotting lives in hk_prior_regularization_study.py.
+    from hk_prior_regularization_study import plot_prior_regularization_grid as _plot
+
+    return _plot(
+        config,
+        true_grid,
+        row_results,
+        extent=_extent_from_config(config),
+        scatter_particles_fn=_scatter_particles,
     )
-    plt.tight_layout()
-    return fig
 
 
 def w2_particle_to_empirical_reference(
@@ -598,70 +564,17 @@ def run_study_truncation_vs_continuation(config: Dict, key: jax.Array) -> jax.Ar
 
 
 def run_study_prior_regularization(config: Dict, key: jax.Array) -> jax.Array:
-    """HK only: Fisher–Rao prior on vs off with continuation disabled in both arms."""
-    print("=" * 80)
-    print("Study B: Fisher-Rao prior regularization on vs off (no continuation)")
-    print("=" * 80)
-    n_data_list = list(config["n_data_list"])
-    B = config["n_bootstrap"]
-    prior, kernel = make_prior_and_kernel(config)
+    """
+    Study B runner (delegated).
 
-    true_grid = build_bootstrap_true_density_grid(config)
-    out_pdf = "bootstrap_prior_regularization.pdf"
+    The uncertainty-quantification (niter trajectories) variant lives in
+    `hk_prior_regularization_uq.py`. This function remains for backward-compatible
+    PDF generation via `--study prior`.
+    """
+    # Import locally so hk_computational_choices.py stays lightweight unless needed.
+    from hk_prior_regularization_study import run_study_prior_regularization as _run
 
-    row_results: List[Tuple[ParticleMeasure, ParticleMeasure, int]] = []
-
-    for nd in n_data_list:
-        cfg = dict(config)
-        cfg["n_data"] = nd
-        key, data_key, pp_key = jr.split(key, 3)
-        data = generate_clover_data(data_key, cfg)
-        prior_particles = prior.to_particle_measure(pp_key, cfg["n_particles"])
-        n_steps = int(nd)
-        print(f"  n_data={nd}, n_steps={n_steps} (continuation disabled)")
-
-        hk_on, hk_off = [], []
-        for _ in range(B):
-            key, key_on, key_off = jr.split(key, 3)
-            hk_on.append(
-                run_single_hk_replicate(
-                    key_on,
-                    data,
-                    prior,
-                    kernel,
-                    prior_particles,
-                    cfg,
-                    n_steps_override=n_steps,
-                    bootstrap_after_data_override=False,
-                    use_prior_regularization=True,
-                )
-            )
-            hk_off.append(
-                run_single_hk_replicate(
-                    key_off,
-                    data,
-                    prior,
-                    kernel,
-                    prior_particles,
-                    cfg,
-                    n_steps_override=n_steps,
-                    bootstrap_after_data_override=False,
-                    use_prior_regularization=False,
-                )
-            )
-
-        row_results.append((hk_on[0], hk_off[0], nd))
-
-    fig = plot_prior_regularization_grid(config, true_grid, row_results)
-    with PdfPages(out_pdf) as pdf:
-        pdf.savefig(fig, bbox_inches="tight")
-    plt.close(fig)
-
-    print(
-        f"\nSaved '{out_pdf}' (HK: {len(n_data_list)}×2 grid, "
-        "rows = sample sizes, cols = prior on | off)."
-    )
-    return key
+    return _run(config, key)
 
 
 
