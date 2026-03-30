@@ -30,15 +30,15 @@ def plot_prior_regularization_grid(
     scatter_particles_fn,
 ) -> plt.Figure:
     """
-    HK Study B: N×1 grid — one row per sample size; overlay prior on/off particles.
+    HK Study B: 1×N grid — one column per sample size; overlay prior on/off particles.
     """
-    nrows = len(row_results)
-    fig_h = max(9.0, 3.4 * nrows)
-    fig, axes = plt.subplots(nrows, 1, figsize=(7.0, fig_h), sharex=True, sharey=True)
-    axes = np.asarray(axes).reshape(nrows, 1)
-    for i, (hk_on, hk_off, nd) in enumerate(row_results):
+    ncols = len(row_results)
+    fig_w = max(12.0, 6.0 * ncols)
+    fig, axes = plt.subplots(1, ncols, figsize=(fig_w, 6.0), sharex=True, sharey=True)
+    axes = np.asarray(axes).reshape(1, ncols)
+    for j, (hk_on, hk_off, nd) in enumerate(row_results):
         n_steps = int(nd)
-        ax = axes[i, 0]
+        ax = axes[0, j]
         ax.imshow(
             true_grid,
             origin="lower",
@@ -63,9 +63,9 @@ def plot_prior_regularization_grid(
             frameon=True,
             fontsize=9,
         )
-    for i in range(nrows):
-        axes[i, 0].set_ylabel("x₂")
-    axes[-1, 0].set_xlabel("x₁")
+    axes[0, 0].set_ylabel("x₂")
+    for j in range(ncols):
+        axes[0, j].set_xlabel("x₁")
     fig.suptitle(
         "WFR Flow — Prior Regularization: true density + particles (overlay, size ∝ weight)",
         y=1.01,
@@ -156,7 +156,7 @@ def run_study_prior_regularization(config: Dict, key: jax.Array) -> jax.Array:
     plt.close(fig)
 
     print(
-        f"\nSaved '{out_pdf}' (HK: {len(n_data_list)}×1 grid, rows = sample sizes; "
+        f"\nSaved '{out_pdf}' (HK: 1×{len(n_data_list)} grid, cols = sample sizes; "
         "prior on/off overlaid)."
     )
     return key
