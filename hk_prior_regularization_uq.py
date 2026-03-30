@@ -278,12 +278,6 @@ def main() -> None:
         help="JAX backend to use for the run mode. Merge mode never uses JAX.",
     )
     parser.add_argument(
-        "--xla-cpu-compilation-parallelism",
-        type=int,
-        default=1,
-        help="Sets XLA CPU compilation parallelism (reduces LLVM RAM spikes).",
-    )
-    parser.add_argument(
         "--compile-cache-dir",
         type=str,
         default=None,
@@ -340,21 +334,12 @@ def main() -> None:
         print(f"Saved {args.merge_out}")
         return
 
-    # ----------------------------
-    # Cluster safety / stability:
-    # - avoid many parallel LLVM compilation threads (RAM spikes)
-    # - optionally enable compilation cache
-    # Must run BEFORE importing jax.
-    # ----------------------------
+    # Cluster: set backend before importing JAX. Do not inject XLA_FLAGS here:
+    # flag names differ across jaxlib/XLA builds and can abort with "Unknown flag".
     if args.platform == "cpu":
         os.environ.setdefault("JAX_PLATFORM_NAME", "cpu")
     elif args.platform == "gpu":
         os.environ.setdefault("JAX_PLATFORM_NAME", "gpu")
-
-    xla_flags = os.environ.get("XLA_FLAGS", "")
-    flag = f"--xla_cpu_compilation_parallelism={int(args.xla_cpu_compilation_parallelism)}"
-    if flag not in xla_flags:
-        os.environ["XLA_FLAGS"] = (xla_flags + " " + flag).strip()
 
     if args.compile_cache_dir:
         os.makedirs(args.compile_cache_dir, exist_ok=True)
