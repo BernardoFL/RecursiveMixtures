@@ -32,6 +32,111 @@ from recursive_mixtures import (
 from recursive_mixtures.utils import bayesian_bootstrap
 
 
+def _clover_plot_bounds(
+    radius: float,
+    radial_std: float,
+    tangential_std: float,
+    *,
+    nsig: float = 4.0,
+) -> Dict[str, float]:
+    r = float(radius)
+    rs = float(radial_std)
+    ts = float(tangential_std)
+    pad = nsig * max(rs, ts)
+    x_min = -(r + pad)
+    x_max = (r + pad)
+    y_min = -(r + pad)
+    y_max = (r + pad)
+    return {
+        "grid_x_min": float(x_min),
+        "grid_x_max": float(x_max),
+        "grid_y_min": float(y_min),
+        "grid_y_max": float(y_max),
+    }
+
+
+def build_true_density_grid(config: Dict) -> np.ndarray:
+    n = int(config.get("grid_size", 200))
+    bounds = _clover_plot_bounds(
+        radius=float(config["clover_radius"]),
+        radial_std=float(config["clover_radial_std"]),
+        tangential_std=float(config["clover_tangential_std"]),
+        nsig=4.0,
+    )
+    xs = jnp.linspace(bounds["grid_x_min"], bounds["grid_x_max"], n)
+    ys = jnp.linspace(bounds["grid_y_min"], bounds["grid_y_max"], n)
+    X, Y = jnp.meshgrid(xs, ys)
+    grid_points = jnp.stack([X.ravel(), Y.ravel()], axis=1)
+    clover = CloverDistribution(
+        radius=float(config["clover_radius"]),
+        radial_std=float(config["clover_radial_std"]),
+        tangential_std=float(config["clover_tangential_std"]),
+    )
+    dens = clover.pdf(grid_points)
+    return np.asarray(dens.reshape(n, n)), bounds
+
+
+def scatter_particles(ax, config: Dict, measure: ParticleMeasure, color: str) -> None:
+    atoms = np.asarray(measure.atoms)
+    weights = np.asarray(measure.weights)
+    wmax = float(weights.max())
+    sizes = weights / max(wmax, 1e-12) * 300.0
+    ax.scatter(
+        atoms[:, 0],
+        atoms[:, 1],
+        s=sizes,
+        c=color,
+        alpha=0.88,
+        edgecolors="white",
+        linewidths=0.4,
+        zorder=3,
+    )
+    bounds = _clover_plot_bounds(
+        radius=float(config["clover_radius"]),
+        radial_std=float(config["clover_radial_std"]),
+        tangential_std=float(config["clover_tangential_std"]),
+        nsig=4.0,
+    )
+    ax.set_xlim(bounds["grid_x_min"], bounds["grid_x_max"])
+    ax.set_ylim(bounds["grid_y_min"], bounds["grid_y_max"])
+    ax.set_xlabel("x₁")
+    ax.set_ylabel("x₂")
+
+
+def plot_particles_reference_n200(
+    *,
+    config: Dict,
+    prior_on: ParticleMeasure,
+    prior_off: ParticleMeasure,
+    out_path: str,
+) -> None:
+    true_grid, bounds = build_true_density_grid(config)
+    extent = [
+        bounds["grid_x_min"],
+        bounds["grid_x_max"],
+        bounds["grid_y_min"],
+        bounds["grid_y_max"],
+    ]
+    fig, axes = plt.subplots(1, 2, figsize=(12.0, 5.5), sharex=True, sharey=True)
+    panels = [
+        ("Prior on", prior_on, "teal"),
+        ("Prior off", prior_off, "royalblue"),
+    ]
+    for ax, (title, measure, color) in zip(axes, panels):
+        ax.imshow(
+            true_grid,
+            origin="lower",
+            extent=extent,
+            aspect="auto",
+            cmap="gray_r",
+        )
+        scatter_particles(ax, config, measure, color)
+        ax.set_title(f"n = 200, {title}")
+    plt.tight_layout()
+    plt.savefig(out_path, bbox_inches="tight")
+    plt.close(fig)
+
+
 def setup_config(*, fast: bool = True) -> Dict:
     # Keep consistent defaults with hk_computational_choices.py where relevant.
     cfg = {
@@ -58,6 +163,8 @@ def setup_config(*, fast: bool = True) -> Dict:
         "store_every": 10,
         # OT reference
         "w2_reference_size": 2048,
+        # Plotting grid for particle reference panel
+        "grid_size": 200,
         # Seed
         "seed": 123,
     }
@@ -383,6 +490,47 @@ def main() -> None:
     )
     print(f"Saved {out_npz}")
 
+    # Also emit a reference particle plot at n=200 (one replicate per arm).
+    # This is meant as a quick visual sanity check for HPC runs.
+    cfg200 = dict(config)
+    cfg200["n_data"] = 200
+    key200 = jr.PRNGKey(base_seed + 999_999 + 100 * shard_index + num_shards)
+    key200, data200_key, pp200_key = jr.split(key200, 3)
+    data200 = generate_clover_data(data200_key, cfg200)
+    prior_particles200 = prior.to_particle_measure(pp200_key, int(cfg200["n_particles"]))
+
+    k_on = jr.PRNGKey(base_seed + 999_999_001 + 100 * shard_index + num_shards)
+    k_off = jr.PRNGKey(base_seed + 999_999_002 + 100 * shard_index + num_shards)
+    hist_on = run_single_replicate_with_history(
+        k_on,
+        data200,
+        prior,
+        kernel,
+        prior_particles200,
+        cfg200,
+        use_prior_regularization=True,
+    )
+    hist_off = run_single_replicate_with_history(
+        k_off,
+        data200,
+        prior,
+        kernel,
+        prior_particles200,
+        cfg200,
+        use_prior_regularization=False,
+    )
+    out_particles = os.path.join(
+        args.out_dir,
+        f"prior_regularization_particles_n200_shard{shard_index}of{num_shards}.pdf",
+    )
+    plot_particles_reference_n200(
+        config=cfg200,
+        prior_on=hist_on[-1],
+        prior_off=hist_off[-1],
+        out_path=out_particles,
+    )
+    print(f"Saved {out_particles}")
+
     if not args.no_plot:
         out_pdf = os.path.join(
             args.out_dir,
@@ -394,7 +542,7 @@ def main() -> None:
         plot_uq(times, w2_by_arm["Prior off"], "Prior off", ax)
         ax.set_xlabel("step")
         ax.set_ylabel(r"$W_2(\hat\\mu_t,\\,\\mu_{\\mathrm{ref}})$")
-        ax.set_title("Study B UQ: W2 trajectories (mean with 10–90% band)")
+        ax.set_title("Study B UQ: W2 trajectories (mean with 90% band)")
         ax.grid(True, alpha=0.3)
         ax.legend(loc="best")
         plt.tight_layout()
