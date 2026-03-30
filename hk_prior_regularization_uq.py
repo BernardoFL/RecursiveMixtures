@@ -12,27 +12,18 @@ from __future__ import annotations
 
 import argparse
 import os
+import glob
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Optional
 
-import jax
-import jax.numpy as jnp
-import jax.random as jr
-import matplotlib.pyplot as plt
 import numpy as np
 
 from clover_distribution import CloverDistribution
-from recursive_mixtures import (
-    GaussianKernel,
-    GaussianPrior,
-    HellingerKantorovichFlow,
-    ParticleMeasure,
-    PitmanYorProcessPrior,
-)
-from recursive_mixtures.utils import bayesian_bootstrap
+from recursive_mixtures import ParticleMeasure
 
 
 def setup_config(*, fast: bool = True) -> Dict:
+    import jax.numpy as jnp
     # Keep consistent defaults with hk_computational_choices.py where relevant.
     cfg = {
         # Target: clover
@@ -65,6 +56,7 @@ def setup_config(*, fast: bool = True) -> Dict:
 
 
 def make_prior_and_kernel(config: Dict):
+    from recursive_mixtures import GaussianPrior, PitmanYorProcessPrior, GaussianKernel
     base = GaussianPrior(
         mean=config["prior_mean"],
         std=config["prior_std"],
@@ -80,6 +72,7 @@ def make_prior_and_kernel(config: Dict):
 
 
 def make_hk_flow(prior, kernel, prior_particles: ParticleMeasure, config: Dict) -> HellingerKantorovichFlow:
+    from recursive_mixtures import HellingerKantorovichFlow
     return HellingerKantorovichFlow(
         kernel=kernel,
         prior=prior,
@@ -96,6 +89,7 @@ def make_hk_flow(prior, kernel, prior_particles: ParticleMeasure, config: Dict) 
 
 
 def generate_clover_data(key: jax.Array, config: Dict) -> jax.Array:
+    import jax
     clover = CloverDistribution(
         radius=float(config["clover_radius"]),
         radial_std=float(config["clover_radial_std"]),
@@ -127,8 +121,8 @@ class Arm:
 
 
 def run_single_replicate_with_history(
-    key: jax.Array,
-    data: jax.Array,
+    key,
+    data,
     prior,
     kernel,
     prior_particles: ParticleMeasure,
@@ -144,6 +138,9 @@ def run_single_replicate_with_history(
     store_every = int(config["store_every"])
     if store_every <= 0:
         raise ValueError("store_every must be positive for trajectory UQ")
+
+    import jax.random as jr
+    from recursive_mixtures.utils import bayesian_bootstrap
 
     key_boot, key_resample, key_init, key_flow = jr.split(key, 4)
     weights_boot = bayesian_bootstrap(key_boot, n_data)
@@ -229,12 +226,15 @@ def merge_uq_shards(npz_paths: List[str], out_path: str) -> None:
         if isinstance(obj, dict):
             out = {}
             for k, v in obj.items():
-                if isinstance(v, (np.ndarray, jnp.ndarray)):
+                try:
                     out[k] = np.asarray(v).tolist()
-                else:
+                except Exception:
                     out[k] = v
             return out
-        return obj
+        try:
+            return np.asarray(obj).tolist()
+        except Exception:
+            return obj
 
     cfg0 = _cfg_to_comparable(loaded[0]["config"].item())
     w2_on = [d["w2_prior_on"] for d in loaded]
@@ -251,6 +251,11 @@ def merge_uq_shards(npz_paths: List[str], out_path: str) -> None:
         w2_prior_off=np.concatenate(w2_off, axis=0),
         config=cfg0,
     )
+
+
+def discover_shards(merge_dir: str, pattern: str) -> List[str]:
+    paths = sorted(glob.glob(os.path.join(merge_dir, pattern)))
+    return paths
 
 
 def main() -> None:
@@ -284,6 +289,18 @@ def main() -> None:
         help="Comma-separated list of shard .npz paths to merge; when set, merges and exits.",
     )
     parser.add_argument(
+        "--merge-dir",
+        type=str,
+        default=None,
+        help="Directory to auto-discover shard .npz files for merging (alternative to --merge-shards).",
+    )
+    parser.add_argument(
+        "--merge-pattern",
+        type=str,
+        default="prior_regularization_uq_*_shard*of*.npz",
+        help="Glob pattern (within --merge-dir) for shard discovery.",
+    )
+    parser.add_argument(
         "--merge-out",
         type=str,
         default="prior_regularization_uq_merged.npz",
@@ -291,8 +308,15 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if args.merge_shards:
-        paths = [p.strip() for p in args.merge_shards.split(",") if p.strip()]
+    if args.merge_shards is not None or args.merge_dir is not None:
+        if args.merge_dir is not None:
+            paths = discover_shards(args.merge_dir, args.merge_pattern)
+        else:
+            paths = [p.strip() for p in str(args.merge_shards).split(",") if p.strip()]
+        if not paths:
+            raise ValueError(
+                "No shard files found. Use --merge-dir/--merge-pattern or pass a non-empty --merge-shards list."
+            )
         merge_uq_shards(paths, args.merge_out)
         print(f"Saved {args.merge_out}")
         return
@@ -309,6 +333,8 @@ def main() -> None:
         raise ValueError("--niter must be positive")
 
     os.makedirs(args.out_dir, exist_ok=True)
+
+    import jax.random as jr
 
     base_seed = int(config["seed"])
     key = jr.PRNGKey(base_seed)
@@ -405,6 +431,7 @@ def main() -> None:
 
 if __name__ == "__main__":
     try:
+        import jax
         jax.config.update("jax_enable_x64", True)
     except Exception:
         pass
