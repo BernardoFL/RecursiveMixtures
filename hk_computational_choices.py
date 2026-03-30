@@ -3,7 +3,9 @@
 Computational choices experiment for the HK (WFR) flow on a four-petal clover
 Gaussian mixture.
 
-Isolates the effect of two algorithmic switches:
+Isolates the effect of two algorithmic switches (Studies A/B) and optionally
+Study C — Wasserstein distance vs sample size for a 2×2 factorial over those
+switches:
 
     Study A — Bootstrap continuation on/off
         Compare stopping after exactly one ordered pass over the data vs running
@@ -105,6 +107,9 @@ def setup_config(fast: bool = True) -> Dict:
         # Studies (truncation vs continuation; prior on/off): sample sizes and
         # fixed continuation scheme n_steps_on = ceil(1.5 * n_data).
         "n_data_list": [100, 1000],
+        # Study C (Wasserstein vs n): empirical reference size for OT to clover
+        # Study C: OT reference size (50×M cost matrix per curve point; keep M moderate)
+        "w2_reference_size": 2048,
     }
     config.update(
         _clover_plot_bounds(
@@ -416,6 +421,115 @@ def plot_prior_regularization_grid(
     return fig
 
 
+def w2_particle_to_empirical_reference(
+    measure: ParticleMeasure,
+    ref_points: np.ndarray,
+) -> float:
+    """
+    Approximate W_2 between a particle measure and a uniform empirical measure
+    on ref_points using squared Euclidean cost (POT exact transport).
+    """
+    try:
+        import ot
+    except ImportError as e:
+        raise ImportError(
+            "The wasserstein study requires the POT package. Install with: pip install POT"
+        ) from e
+    a = np.asarray(measure.weights, dtype=np.float64).ravel()
+    a = a / np.sum(a)
+    m = int(ref_points.shape[0])
+    b = np.full(m, 1.0 / m, dtype=np.float64)
+    x = np.asarray(measure.atoms, dtype=np.float64)
+    y = np.asarray(ref_points, dtype=np.float64)
+    c = ot.dist(x, y, metric="sqeuclidean")
+    w2_sq = float(ot.emd2(a, b, c))
+    return float(np.sqrt(max(w2_sq, 0.0)))
+
+
+def run_study_wasserstein_sweep(config: Dict, key: jax.Array) -> None:
+    """
+    Study C: for n in 100,200,...,1000, run HK on all four (prior × continuation)
+    arms and plot W_2(final particles, empirical reference) vs n.
+    """
+    # Ensure POT is available before any heavy work
+    try:
+        import ot  # noqa: F401
+    except ImportError as e:
+        raise ImportError(
+            "The wasserstein study requires the POT package. Install with: pip install POT"
+        ) from e
+
+    print("=" * 80)
+    print("Study C: Wasserstein distance vs n (2×2 factorial vs empirical target)")
+    print("=" * 80)
+
+    m_ref = int(config["w2_reference_size"])
+    n_sweep = list(range(100, 1001, 100))
+
+    key, kref = jr.split(key)
+    clover = CloverDistribution(
+        radius=float(config["clover_radius"]),
+        radial_std=float(config["clover_radial_std"]),
+        tangential_std=float(config["clover_tangential_std"]),
+    )
+    ref_points = np.asarray(clover.sample(kref, m_ref))
+    print(
+        f"Reference: {m_ref} i.i.d. samples from clover (fixed across all n and arms).",
+        flush=True,
+    )
+
+    prior, kernel = make_prior_and_kernel(config)
+
+    arms: List[Tuple[str, bool, bool]] = [
+        ("Prior on, continuation off", True, False),
+        ("Prior on, continuation on", True, True),
+        ("Prior off, continuation off", False, False),
+        ("Prior off, continuation on", False, True),
+    ]
+    series: Dict[str, List[float]] = {label: [] for label, _, _ in arms}
+
+    for nd in n_sweep:
+        cfg = dict(config)
+        cfg["n_data"] = nd
+        key, data_key, pp_key = jr.split(key, 3)
+        data = generate_clover_data(data_key, cfg)
+        prior_particles = prior.to_particle_measure(pp_key, cfg["n_particles"])
+        n_steps_on = int(np.ceil(1.5 * nd))
+
+        for label, use_prior, cont in arms:
+            n_steps = n_steps_on if cont else int(nd)
+            key, krun = jr.split(key)
+            measure = run_single_hk_replicate(
+                krun,
+                data,
+                prior,
+                kernel,
+                prior_particles,
+                cfg,
+                n_steps_override=n_steps,
+                bootstrap_after_data_override=cont,
+                use_prior_regularization=use_prior,
+            )
+            w2 = w2_particle_to_empirical_reference(measure, ref_points)
+            series[label].append(w2)
+            print(f"  n={nd:4d}  {label:32s}  W2 ≈ {w2:.5f}", flush=True)
+
+    out_pdf = "hk_wasserstein_vs_n.pdf"
+    fig, ax = plt.subplots(figsize=(10.0, 5.5))
+    for label, _, _ in arms:
+        ax.plot(n_sweep, series[label], marker="o", linewidth=1.8, label=label)
+    ax.set_xlabel("n (data size)")
+    ax.set_ylabel(r"$W_2(\hat\mu_n,\,\mu_{\mathrm{ref}})$")
+    ax.set_title(
+        "HK WFR: 2-Wasserstein vs n (particles vs fixed empirical reference; "
+        "2×2 prior × continuation)"
+    )
+    ax.legend(loc="best", fontsize=9)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(out_pdf, bbox_inches="tight")
+    plt.close(fig)
+    print(f"\nSaved '{out_pdf}'.")
 
 
 def run_study_truncation_vs_continuation(config: Dict, key: jax.Array) -> jax.Array:
@@ -572,6 +686,10 @@ def main(
 
     key = jr.PRNGKey(config["seed"])
 
+    if study == "wasserstein":
+        run_study_wasserstein_sweep(config, key)
+        return
+
     if study in ("truncation", "both"):
         key = run_study_truncation_vs_continuation(config, key)
 
@@ -597,9 +715,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--study",
         type=str,
-        choices=("truncation", "prior", "both"),
+        choices=("truncation", "prior", "both", "wasserstein"),
         default="both",
-        help="truncation|prior|both sample-size studies.",
+        help="truncation|prior|both sample-size studies; wasserstein = Study C (W2 vs n).",
     )
     parser.add_argument(
         "--n-data-list",
