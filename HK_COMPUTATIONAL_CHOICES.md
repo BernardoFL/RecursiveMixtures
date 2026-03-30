@@ -68,7 +68,7 @@ Requires the **POT** package (`pip install POT`).
 - `bootstrap_truncation_vs_continuation.pdf` — Study A: continuation on vs off
   in a single **N×2** grid (rows = sample sizes `n`, cols = off/on).
 - `bootstrap_prior_regularization.pdf` — Study B: prior regularization on vs
-  off (N×2 grid, one row per `n`, no continuation in either arm).
+  off (N×1 grid, one row per `n`, prior on/off particles overlaid; no continuation in either arm).
 - For HPC trajectory uncertainty quantification for Study B, use
   [`hk_prior_regularization_uq.py`](hk_prior_regularization_uq.py).
 - `hk_wasserstein_vs_n.pdf` — Study C: \(W_2\) vs `n` for the four factorial arms.

@@ -30,39 +30,44 @@ def plot_prior_regularization_grid(
     scatter_particles_fn,
 ) -> plt.Figure:
     """
-    HK Study B: N×2 grid — one row per sample size; columns = prior on | prior off.
-    Same panel style as Study A (true-density heatmap + HK particles only).
+    HK Study B: N×1 grid — one row per sample size; overlay prior on/off particles.
     """
     nrows = len(row_results)
     fig_h = max(9.0, 3.4 * nrows)
-    fig, axes = plt.subplots(nrows, 2, figsize=(12.0, fig_h), sharex=True, sharey=True)
-    axes = np.asarray(axes)
-    if nrows == 1:
-        axes = axes.reshape(1, 2)
+    fig, axes = plt.subplots(nrows, 1, figsize=(7.0, fig_h), sharex=True, sharey=True)
+    axes = np.asarray(axes).reshape(nrows, 1)
     for i, (hk_on, hk_off, nd) in enumerate(row_results):
         n_steps = int(nd)
-        for j, (measure, color, col_label) in enumerate(
-            [
-                (hk_on, "teal", "Prior on"),
-                (hk_off, "royalblue", "Prior off"),
-            ]
-        ):
-            ax = axes[i, j]
-            ax.imshow(
-                true_grid,
-                origin="lower",
-                extent=extent,
-                aspect="auto",
-                cmap="gray_r",
-            )
-            scatter_particles_fn(ax, config, measure, color, with_axis_labels=False)
-            ax.set_title(f"n = {nd}, {col_label}\n(n_steps = {n_steps})")
+        ax = axes[i, 0]
+        ax.imshow(
+            true_grid,
+            origin="lower",
+            extent=extent,
+            aspect="auto",
+            cmap="gray_r",
+        )
+        scatter_particles_fn(ax, config, hk_on, "teal", with_axis_labels=False)
+        scatter_particles_fn(ax, config, hk_off, "royalblue", with_axis_labels=False)
+        # Soften overlay
+        for coll in ax.collections[-2:]:
+            coll.set_alpha(0.35)
+        ax.set_title(f"n = {nd}\n(n_steps = {n_steps})")
+        ax.legend(
+            handles=[
+                plt.Line2D([0], [0], marker="o", color="w", label="Prior on",
+                           markerfacecolor="teal", markersize=8, alpha=0.6),
+                plt.Line2D([0], [0], marker="o", color="w", label="Prior off",
+                           markerfacecolor="royalblue", markersize=8, alpha=0.6),
+            ],
+            loc="upper right",
+            frameon=True,
+            fontsize=9,
+        )
     for i in range(nrows):
         axes[i, 0].set_ylabel("x₂")
     axes[-1, 0].set_xlabel("x₁")
-    axes[-1, 1].set_xlabel("x₁")
     fig.suptitle(
-        "WFR Flow — Prior Regularization: true density + particles (size ∝ weight)",
+        "WFR Flow — Prior Regularization: true density + particles (overlay, size ∝ weight)",
         y=1.01,
     )
     plt.tight_layout()
@@ -151,8 +156,8 @@ def run_study_prior_regularization(config: Dict, key: jax.Array) -> jax.Array:
     plt.close(fig)
 
     print(
-        f"\nSaved '{out_pdf}' (HK: {len(n_data_list)}×2 grid, "
-        "rows = sample sizes, cols = prior on | off)."
+        f"\nSaved '{out_pdf}' (HK: {len(n_data_list)}×1 grid, rows = sample sizes; "
+        "prior on/off overlaid)."
     )
     return key
 
