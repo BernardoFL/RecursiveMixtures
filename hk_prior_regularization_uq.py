@@ -271,6 +271,25 @@ def main() -> None:
     parser.add_argument("--full", action="store_true", help="Use slower/full config.")
     parser.add_argument("--no-plot", action="store_true", help="Skip PDF plot generation.")
     parser.add_argument(
+        "--platform",
+        type=str,
+        choices=("cpu", "gpu"),
+        default="cpu",
+        help="JAX backend to use for the run mode. Merge mode never uses JAX.",
+    )
+    parser.add_argument(
+        "--xla-cpu-compilation-parallelism",
+        type=int,
+        default=1,
+        help="Sets XLA CPU compilation parallelism (reduces LLVM RAM spikes).",
+    )
+    parser.add_argument(
+        "--compile-cache-dir",
+        type=str,
+        default=None,
+        help="Optional JAX compilation cache directory (recommended on clusters).",
+    )
+    parser.add_argument(
         "--shard-index",
         type=int,
         default=0,
@@ -321,6 +340,26 @@ def main() -> None:
         print(f"Saved {args.merge_out}")
         return
 
+    # ----------------------------
+    # Cluster safety / stability:
+    # - avoid many parallel LLVM compilation threads (RAM spikes)
+    # - optionally enable compilation cache
+    # Must run BEFORE importing jax.
+    # ----------------------------
+    if args.platform == "cpu":
+        os.environ.setdefault("JAX_PLATFORM_NAME", "cpu")
+    elif args.platform == "gpu":
+        os.environ.setdefault("JAX_PLATFORM_NAME", "gpu")
+
+    xla_flags = os.environ.get("XLA_FLAGS", "")
+    flag = f"--xla_cpu_compilation_parallelism={int(args.xla_cpu_compilation_parallelism)}"
+    if flag not in xla_flags:
+        os.environ["XLA_FLAGS"] = (xla_flags + " " + flag).strip()
+
+    if args.compile_cache_dir:
+        os.makedirs(args.compile_cache_dir, exist_ok=True)
+        os.environ.setdefault("JAX_COMPILATION_CACHE_DIR", args.compile_cache_dir)
+
     config = setup_config(fast=not args.full)
     config["seed"] = int(args.seed)
     config["store_every"] = int(args.store_every)
@@ -334,7 +373,16 @@ def main() -> None:
 
     os.makedirs(args.out_dir, exist_ok=True)
 
+    import jax
     import jax.random as jr
+
+    # Enable compilation cache if available (JAX >= 0.4).
+    if args.compile_cache_dir:
+        try:
+            from jax.experimental import compilation_cache as _cc
+            _cc.initialize_cache(args.compile_cache_dir)
+        except Exception:
+            pass
 
     base_seed = int(config["seed"])
     key = jr.PRNGKey(base_seed)
