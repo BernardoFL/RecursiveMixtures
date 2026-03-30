@@ -13,7 +13,7 @@ from __future__ import annotations
 import argparse
 import os
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 import jax
 import jax.numpy as jnp
@@ -201,6 +201,58 @@ def plot_uq(times: np.ndarray, w2: np.ndarray, label: str, ax) -> None:
     ax.fill_between(times, q10, q90, alpha=0.2)
 
 
+def _replicate_range(
+    niter: int,
+    *,
+    shard_index: int,
+    num_shards: int,
+) -> range:
+    if num_shards <= 0:
+        raise ValueError("--num-shards must be positive")
+    if shard_index < 0 or shard_index >= num_shards:
+        raise ValueError("--shard-index must satisfy 0 <= shard_index < num_shards")
+    # Round-robin assignment for good load balance.
+    return range(shard_index, niter, num_shards)
+
+
+def merge_uq_shards(npz_paths: List[str], out_path: str) -> None:
+    """
+    Merge multiple shard .npz files produced by this script.
+
+    Assumes consistent times/config across shards. Concatenates replicates.
+    """
+    if not npz_paths:
+        raise ValueError("No shard paths provided")
+    loaded = [np.load(p, allow_pickle=True) for p in npz_paths]
+    times0 = loaded[0]["times"]
+    def _cfg_to_comparable(obj):
+        if isinstance(obj, dict):
+            out = {}
+            for k, v in obj.items():
+                if isinstance(v, (np.ndarray, jnp.ndarray)):
+                    out[k] = np.asarray(v).tolist()
+                else:
+                    out[k] = v
+            return out
+        return obj
+
+    cfg0 = _cfg_to_comparable(loaded[0]["config"].item())
+    w2_on = [d["w2_prior_on"] for d in loaded]
+    w2_off = [d["w2_prior_off"] for d in loaded]
+    for d in loaded[1:]:
+        if not np.array_equal(times0, d["times"]):
+            raise ValueError("Shard times mismatch")
+        if cfg0 != _cfg_to_comparable(d["config"].item()):
+            raise ValueError("Shard configs mismatch")
+    np.savez(
+        out_path,
+        times=times0,
+        w2_prior_on=np.concatenate(w2_on, axis=0),
+        w2_prior_off=np.concatenate(w2_off, axis=0),
+        config=cfg0,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Study B UQ: prior regularization on/off with niter trajectories"
@@ -213,7 +265,37 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=123, help="Base RNG seed.")
     parser.add_argument("--full", action="store_true", help="Use slower/full config.")
     parser.add_argument("--no-plot", action="store_true", help="Skip PDF plot generation.")
+    parser.add_argument(
+        "--shard-index",
+        type=int,
+        default=0,
+        help="Shard index for embarrassingly-parallel runs (0..num_shards-1).",
+    )
+    parser.add_argument(
+        "--num-shards",
+        type=int,
+        default=1,
+        help="Number of shards / parallel tasks. Each shard runs a disjoint subset of replicates.",
+    )
+    parser.add_argument(
+        "--merge-shards",
+        type=str,
+        default=None,
+        help="Comma-separated list of shard .npz paths to merge; when set, merges and exits.",
+    )
+    parser.add_argument(
+        "--merge-out",
+        type=str,
+        default="prior_regularization_uq_merged.npz",
+        help="Output path for --merge-shards.",
+    )
     args = parser.parse_args()
+
+    if args.merge_shards:
+        paths = [p.strip() for p in args.merge_shards.split(",") if p.strip()]
+        merge_uq_shards(paths, args.merge_out)
+        print(f"Saved {args.merge_out}")
+        return
 
     config = setup_config(fast=not args.full)
     config["seed"] = int(args.seed)
@@ -228,8 +310,9 @@ def main() -> None:
 
     os.makedirs(args.out_dir, exist_ok=True)
 
-    key = jr.PRNGKey(config["seed"])
-    key, data_key, ref_key = jr.split(key, 3)
+    base_seed = int(config["seed"])
+    key = jr.PRNGKey(base_seed)
+    key, data_key, ref_key, pp_key = jr.split(key, 4)
 
     data = generate_clover_data(data_key, config)
     clover = CloverDistribution(
@@ -240,7 +323,6 @@ def main() -> None:
     ref_points = np.asarray(clover.sample(ref_key, int(config["w2_reference_size"])))
 
     prior, kernel = make_prior_and_kernel(config)
-    key, pp_key = jr.split(key)
     prior_particles = prior.to_particle_measure(pp_key, int(config["n_particles"]))
 
     arms = [
@@ -248,11 +330,18 @@ def main() -> None:
         Arm("Prior off", False),
     ]
 
-    # Run trajectories
+    shard_index = int(args.shard_index)
+    num_shards = int(args.num_shards)
+    iters = list(_replicate_range(niter, shard_index=shard_index, num_shards=num_shards))
+    if not iters:
+        raise ValueError("This shard received an empty replicate set; check --niter/--num-shards.")
+
+    # Run trajectories (sharded): deterministic per-replicate keys derived from base_seed + it.
     histories_by_arm: Dict[str, List[List[ParticleMeasure]]] = {a.label: [] for a in arms}
-    for it in range(niter):
+    for it in iters:
         for arm in arms:
-            key, k = jr.split(key)
+            # Derive keys deterministically so shards are independent and reproducible.
+            k = jr.PRNGKey(base_seed + 10_000 * it + (1 if arm.use_prior_regularization else 2))
             hist = run_single_replicate_with_history(
                 k,
                 data,
@@ -278,7 +367,9 @@ def main() -> None:
 
     out_npz = os.path.join(
         args.out_dir,
-        f"prior_regularization_uq_n{int(config['n_data'])}_niter{niter}_store{store_every}.npz",
+        f"prior_regularization_uq_n{int(config['n_data'])}"
+        f"_niter{niter}_store{store_every}"
+        f"_shard{shard_index}of{num_shards}.npz",
     )
     np.savez(
         out_npz,
@@ -286,13 +377,17 @@ def main() -> None:
         w2_prior_on=w2_by_arm["Prior on"],
         w2_prior_off=w2_by_arm["Prior off"],
         config=config,
+        shard_index=shard_index,
+        num_shards=num_shards,
+        replicate_indices=np.asarray(iters, dtype=np.int64),
     )
     print(f"Saved {out_npz}")
 
     if not args.no_plot:
         out_pdf = os.path.join(
             args.out_dir,
-            f"prior_regularization_uq_n{int(config['n_data'])}_niter{niter}.pdf",
+            f"prior_regularization_uq_n{int(config['n_data'])}_niter{niter}"
+            f"_shard{shard_index}of{num_shards}.pdf",
         )
         fig, ax = plt.subplots(figsize=(10.0, 5.5))
         plot_uq(times, w2_by_arm["Prior on"], "Prior on", ax)
