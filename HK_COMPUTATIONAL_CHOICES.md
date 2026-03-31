@@ -82,17 +82,7 @@ python hk_computational_choices.py --study truncation
 python hk_computational_choices.py --study prior
 python hk_computational_choices.py --study both
 python hk_computational_choices.py --study wasserstein
-python hk_prior_regularization_uq.py --niter 100 --n-data 1000 --store-every 10 --out-dir results/
-```
-
-HPC parallelization (array jobs) example: split `niter=1000` across 20 tasks:
-
-```bash
-# Each task writes its own shard .npz/.pdf
-python hk_prior_regularization_uq.py --niter 1000 --num-shards 20 --shard-index ${SLURM_ARRAY_TASK_ID} --n-data 1000 --store-every 10 --out-dir results/ --no-plot
-
-# Merge shards afterwards on a login node
-python hk_prior_regularization_uq.py --merge-shards "$(ls results/prior_regularization_uq_*_shard*of20.npz | paste -sd, -)" --merge-out results/prior_regularization_uq_merged.npz
+python hk_prior_regularization_uq.py --niter 100 --n-data 1000 --store-every 10 --out-dir results/ --compile-cache-dir results/jax_cache
 ```
 
 To override the automatic y-bounds (heatmap extent and panel y-axis match), use:
